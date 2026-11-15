@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Common Water Lab</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='10' fill='%23183e36'/%3E%3Cpath d='M8 21a12 12 0 0 0 24 0Z' fill='%23c8d8ab'/%3E%3Ccircle cx='20' cy='20' r='12' fill='none' stroke='%23c8d8ab'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="Common Water Lab home"><span class="brand-symbol">◒</span><span>COMMON<br><b>WATER LAB</b></span></a>
+    <div class="sidebar-label">RESEARCH WORKSPACE</div>
+    <nav aria-label="Main navigation">
+      <button class="nav active" data-tab="overview"><span>◫</span> Overview</button>
+      <button class="nav" data-tab="agents"><span>♧</span> Agent laboratory</button>
+      <button class="nav" data-tab="conversation"><span>☷</span> Conversation</button>
+      <button class="nav" data-tab="agreements"><span>◇</span> Agreements</button>
+      <button class="nav" data-tab="experiments"><span>⌁</span> Experiments</button>
+      <button class="nav" data-tab="events"><span>≡</span> Event ledger</button>
+    </nav>
+    <div class="sidebar-bottom"><span class="local-dot"></span> LOCAL ENVIRONMENT<p>Independent farms.<br>One shared resource.</p><small>Rules v1.0 · Researcher view</small></div>
+  </aside>
+  <main>
+    <header class="topbar"><div><span class="eyebrow">MULTI-AGENT RESOURCE STUDY</span><h1 id="page-title">The common ground.</h1></div><button class="primary" id="new-game">＋ New game</button></header>
+    <section class="runbar" aria-label="Game controls">
+      <div class="run-select"><label for="run-select">CURRENT GAME</label><select id="run-select"><option value="">Create your first game</option></select></div>
+      <div id="run-status" class="status">READY</div><span id="run-position" class="subtle">No game selected</span>
+      <div class="controls"><button id="step" disabled>↦ One round</button><button id="pause" disabled>Ⅱ Pause</button><button id="start" class="primary" disabled>▶ Start</button></div>
+    </section>
+    <div id="notice" role="status" hidden></div>
+    <div id="content"></div>
+    <footer><span>Every decision leaves a trace.</span><span>Local processing · Exact accounting · Private agent memories</span></footer>
+  </main>
+  <dialog id="setup">
+    <form id="setup-form">
+      <div class="dialog-head"><div><span class="eyebrow">DESIGN A RUN</span><h2>A new common ground.</h2></div><button type="button" class="icon" id="close-setup" aria-label="Close setup">×</button></div>
+      <p class="subtle">Choose the population and conditions. Each game starts with fresh memories.</p>
+      <div class="form-grid">
+        <label>Controller<select name="controller"><option value="test">Scripted test agents</option><option value="ollama">Autonomous Ollama agents</option></select></label>
+        <label>Population<select name="agent_count"><option value="2">2 farms</option><option value="3">3 farms</option><option value="4">4 farms</option><option value="5">5 farms</option></select></label>
+        <label>Run type<select name="test_mode"><option value="true">Technical pilot</option><option value="false">Regular research · 1,000 rounds</option></select></label>
+        <label>Rounds<input type="number" name="rounds" min="1" max="1000" value="20" required></label>
+        <label>Weather seed<input type="number" name="seed" value="42" required></label>
+        <label>Initial starting farm<select name="start_agent"><option value="0">Farm A</option><option value="1">Farm B</option></select></label>
+        <label>Communication<select name="communication"><option value="false">Off · Private reflection</option><option value="true">On · Discussion + NEWS</option></select></label>
+        <label id="scenario-field">Test scenario<select name="scenario"><option value="balanced">Balanced irrigation</option><option value="scarcity">Water scarcity</option><option value="returns">Unused-water return</option><option value="insolvency">Fee insolvency</option></select></label>
+      </div>
+      <div id="profiles" class="form-grid"></div>
+      <div id="model-fields" hidden><label>Installed model<select name="model" id="model-select"><option value="llama3.2:3b">llama3.2:3b</option></select></label><div class="model-note"><span id="model-status" class="subtle"></span><button type="button" id="refresh-models">Refresh models</button></div></div>
+      <details><summary>Advanced settings</summary><div class="form-grid">
+        <label>Temperature<input name="temperature" type="number" min="0" max="2" step="0.1" value="0"></label>
+        <label>Context tokens<input name="context_tokens" type="number" min="4096" max="131072" value="16384"></label>
+        <label>Output tokens<input name="output_tokens" type="number" min="256" max="8192" value="2048"></label>
+        <label>Request timeout (seconds)<input name="timeout_seconds" type="number" min="10" max="1800" value="180"></label>
+        <label class="full">Local export directory<input name="output_directory" value="data/exports" required></label>
+      </div></details>
+      <div class="form-error" id="setup-error" role="alert"></div>
+      <div class="dialog-footer"><small>Conversations are voluntary, with up to 10 contributions per agent per conversation phase.</small><button class="primary" type="submit">Create game →</button></div>
+    </form>
+  </dialog>
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>
