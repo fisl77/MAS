@@ -2,6 +2,8 @@ import asyncio
 from copy import deepcopy
 from fractions import Fraction
 import json
+import pytest
+from pydantic import ValidationError
 
 from fastapi.testclient import TestClient
 
@@ -156,6 +158,52 @@ def test_phase_specific_schemas_do_not_offer_forbidden_actions():
         (4, True, {'memory','recall_query','new_plants','irrigation'}),
         (7, True, {'memory','recall_query','pass_turn','message','contracts'})):
         assert set(response_model(phase,communication).model_json_schema()['properties'])==allowed
+
+
+def test_conversation_requires_explicit_boolean_participation():
+    for phase in (2,7):
+        for communication in (False,True):
+            model=response_model(phase,communication)
+            assert 'pass_turn' in model.model_json_schema()['required']
+            for body in ({}, {'pass_turn':'false'}, {'pass_turn':0}):
+                with pytest.raises(ValidationError):model.model_validate(body)
+            assert model.model_validate({'pass_turn':False}).pass_turn is False
+            assert model.model_validate({'pass_turn':True}).pass_turn is True
+
+
+def test_contract_response_repaired_without_silent_participation_default(tmp_path,monkeypatch):
+    proposal={'kind':'propose','start_round':1,'end_round':10,
+              'limits':[{'agent_id':'B','max_request':5,'max_net':'1000'}]}
+    responses=iter([{'contracts':[proposal]},
+                    {'pass_turn':True,'contracts':[proposal]},
+                    {'pass_turn':False,'contracts':[proposal]}])
+    requests=[]
+    class Response:
+        def __init__(self,body):self.body=body
+        def raise_for_status(self):pass
+        def json(self):return {'message':{'content':json.dumps(self.body)}}
+    class Client:
+        def __init__(self,**kwargs):pass
+        async def __aenter__(self):return self
+        async def __aexit__(self,*args):pass
+        async def post(self,*args,**kwargs):
+            requests.append(kwargs['json'])
+            return Response(next(responses))
+    monkeypatch.setattr('farm.agents.httpx.AsyncClient',Client)
+    async def run():
+        store=Store(tmp_path/'repair.sqlite3')
+        s=new_game(Config(controller='ollama',communication=True));s['phase']=2
+        rid=store.create(s)
+        decision=await model_decision(s,'B',observation(s,'B'),store,rid,'1:2:0:B')
+        assert decision.pass_turn is False and decision.contracts[0].limits[0].max_request==5
+        assert s['contracts']==[]  # Validation does not execute the proposal.
+        calls=store.calls(rid)
+        assert len(calls)==3 and calls[-1]['error'] is None
+        assert 'pass_turn' in calls[0]['error']
+        assert 'cannot also pass' in calls[1]['error']
+        assert '"pass_turn": false' in requests[1]['messages'][-1]['content']
+        assert '"pass_turn": false' in requests[2]['messages'][-1]['content']
+    asyncio.run(run())
 
 
 def test_model_schema_limits_only_physical_access_not_biology():

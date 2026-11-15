@@ -73,6 +73,13 @@ the game visibly as a technical error. No substitute policy or invented successf
 action is inserted. A pause request waits for the in-flight call to finish and saves
 its validated decision before stopping.
 
+Prompt version `farm-agent-1.3` requires an explicit boolean `pass_turn` in every
+discussion or reflection response. Missing choices are rejected instead of silently
+defaulting to passing. Repair feedback explicitly explains that messages and contract
+actions require `pass_turn: false`; after two failed repairs the visible error includes
+the validation reason. Restart the server to load this change and create a new game:
+existing runs retain their recorded prompt/source versions for reproducibility.
+
 ## Rules and information boundaries
 
 The authoritative rules are documented in [docs/RULES.md](docs/RULES.md). The

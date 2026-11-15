@@ -6,7 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 RULE_VERSION = "farm-1.0"
-PROMPT_VERSION = "farm-agent-1.2"
+PROMPT_VERSION = "farm-agent-1.3"
 
 
 def water(value: str | int) -> Fraction:
@@ -122,7 +122,7 @@ class FarmWork(PrivateNotes):
 
 
 class PrivateReflection(PrivateNotes):
-    pass_turn: bool = True
+    pass_turn: bool = Field(strict=True, description="Required explicit choice: false to participate, true to pass. Public messages and contract actions require false.")
 
 
 class PublicDiscussion(PrivateReflection):
