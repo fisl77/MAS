@@ -1,23 +1,88 @@
 """Allowlist-based agent observations; never remove secrets from a full state dump."""
 from copy import deepcopy
+from itertools import takewhile
+from math import ceil
+import re
+from .schema import PUBLIC_MESSAGE_LIMIT, REPETITION_PASS_LIMIT, water, working_notes
+from .water_budget import liters_text
+from .conversation import current_progress, phase_budget, public_discussion, speaker_order, turn_messages
+from .evidence import cultivation_evidence
+from .experience import recent_changes
 
 
-def observation(s, aid, recalled=None):
+def conversation_status(s, aid=None):
+    public_active = list(s.get("public_active_agents", s["agents"]))
+    phase_open = s.get("status") != "completed" and s["config"]["communication"] and (s["phase"] == 2 or (s["phase"] == 7 and s["news_ready"]))
+    budget = phase_budget(s)
+    used = {a: budget['messages_used'].get(a, 0) for a in public_active}
+    remaining = {a: max(0, PUBLIC_MESSAGE_LIMIT-used[a]) for a in public_active}
+    eligible = speaker_order(s) if phase_open else []
+    return {"phase_open": phase_open, "pass_number": s["turn"]+1 if phase_open else None,
+            "message_limit_per_agent": PUBLIC_MESSAGE_LIMIT,
+            "messages_used": used, "messages_remaining": remaining,
+            "own_messages_remaining": remaining.get(aid),
+            "can_receive_reply_before_phase_end": phase_open and any(a != aid for a in eligible),
+            "next_speaker": eligible[0] if eligible else None, "eligible_agents": eligible,
+            "exhausted_agents": [a for a in public_active if not remaining[a]],
+            "known_eliminated_agents": [a for a in s["agents"] if a not in public_active],
+            "consecutive_passes": len(budget['passed_agents']),
+            "passed_since_last_contribution": list(budget['passed_agents']),
+            "stalled_passes": current_progress(s)["stalled_passes"],
+            "stalled_pass_limit": REPETITION_PASS_LIMIT,
+            "repeated_agents": list(current_progress(s)["repeated_agents"]),
+            "passing_is_permanent": False, "passes_cost_messages": False}
+
+
+def observation(s, aid, *, store=None, rid=None):
     a = s["agents"][aid]
     own = {k: deepcopy(a[k]) for k in ("id", "profile", "bank", "profit", "debt", "plants",
-           "request", "delivered", "returned", "used", "sold", "lost", "fees", "revenue", "memory", "recent_plant_results")}
+           "request", "delivered", "returned", "used", "sold", "lost", "fees", "revenue")}
+    own["memory"] = working_notes(a["memory"])
+    if 'last_deliberate_bluff' in a:
+        own['last_deliberate_bluff'] = deepcopy(a['last_deliberate_bluff'])
+    own["recent_plant_results"] = recent_changes(a["recent_plant_results"])
+    own["other_plant_results"] = len(a["recent_plant_results"]) - len(own["recent_plant_results"])
     value = {"round": s["round"], "phase": s["phase"], "conversation_turn": s["turn"],
              "own_farm": own, "news": deepcopy(s["news"]),
              "known_initial_pond_liters": 5000, "active_agents": list(s.get("public_active_agents", s["agents"])),
-             "recalled_observations": recalled or []}
+             "recalled_experiences": []}
+    own['cultivation_evidence'] = cultivation_evidence(a, compare_doses=s["phase"] in (1, 3, 4))
+    if s["phase"] in (3, 4) and 'planned_sowing' in a:
+        plan = a['planned_sowing']
+        own['planned_sowing'] = deepcopy(plan)
+        sowing_liters = sum(entry['count'] * water(entry['water_per_plant']) for entry in plan)
+        own['planned_sowing_liters'] = liters_text(sowing_liters)
+        if s['phase'] == 3:
+            own['whole_liters_for_planned_sowing_alone'] = ceil(sowing_liters)
+            if a['plants']:
+                repeat_liters = sum(g['count'] * g['water'] for g in a['plants'])
+                own['whole_liters_if_also_repeating_last_irrigation'] = ceil(sowing_liters + repeat_liters)
     if s["config"]["communication"]:
-        # Only completed passes enter this state. Current-round requests are never exposed.
-        value["messages"] = deepcopy(s["messages"][-30:])
+        value["conversation_status"] = conversation_status(s, aid)
+        if s["phase"] != 4:
+            value.update(public_discussion(s, aid))
         value["agreements"] = [{k: deepcopy(c[k]) for k in ("id", "version", "participants", "limits",
-            "start_round", "end_round", "status", "signatures", "cancelled_from", "effective_end")}
+            "start_round", "end_round", "status", "signatures", "cancelled_from", "effective_end", "replaces")}
             for c in s["contracts"] if c["status"] in ("active", "proposed")]
+        published_round = s["news"]["round"]
+        recent = takewhile(lambda x: x["round"] >= published_round, reversed(s["contract_results"]))
         value["own_agreement_results"] = [{"round": x["round"], "contract_id": x["contract_id"],
-            "own_result": deepcopy(x["individual"][aid])} for x in s["contract_results"][-30:] if aid in x["individual"]]
+            "own_result": deepcopy(x["individual"][aid])} for x in recent
+            if x["round"] == published_round and aid in x["individual"]][::-1]
+    if store is not None:
+        public = s["config"]["communication"] and s["phase"] in (2, 7)
+        lookup = value
+        turn_text = ''
+        if public:
+            latest, direct = turn_messages(s, aid)
+            lookup = {**value, 'messages': latest, 'followup_messages': direct, 'older_discussion': []}
+            if direct or latest:
+                msg = (direct or latest)[0]
+                turn_text = msg['text']
+                if re.search(r'\b(?:agree\w*|promis\w*|commit\w*|deal|sign\w*|offer\w*)\b', turn_text, re.I):
+                    turn_text += ' Farm ' + msg['sender']
+            value['focused_recall'] = True
+        value["recalled_experiences"] = store.decision_recall(rid, aid, lookup, a["recall_query"], turn_text, public)
     return value
 
 

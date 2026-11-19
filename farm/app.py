@@ -10,16 +10,16 @@ import platform
 import uuid
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import Field
 
 from .agents import list_models
 from .engine import new_game, PHASES
 from .runner import Runner
-from .schema import Config, Strict
+from .schema import Config, Strict, PROMPT_VERSION, RULE_VERSION
 from .store import Store, display, dumps
-from .views import metrics, observation
+from .views import metrics, observation, conversation_status
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -97,6 +97,7 @@ def create_app(database=None):
         s = store.load(rid)
         return display({"id": rid, "state": s, "metrics": metrics(s), "phase_name": PHASES[s["phase"]],
             "execution": store.call_stats(rid),
+            "conversation": conversation_status(s) if s["rule_version"] == RULE_VERSION else None,
             "progress": runner.progress if runner.current == rid else None})
 
     @app.post("/api/runs/{rid}/{command}")
@@ -137,7 +138,17 @@ def create_app(database=None):
         s = store.load(rid)
         if aid not in s["agents"]:
             raise HTTPException(404, "Agent not found.")
-        return display(observation(s, aid, store.recall(rid, aid, limit=3)))
+        if s.get("prompt_version") != PROMPT_VERSION:
+            saved = store.last_observation(rid, aid)
+            if saved is not None:
+                return display(saved)
+        return display(observation(s, aid, store=store, rid=rid))
+
+    @app.get("/api/runs/{rid}/agents/{aid}/notes")
+    def private_note_history(rid: str, aid: str, before: int | None = None):
+        if aid not in store.load(rid)['agents']:
+            raise HTTPException(404, "Agent not found.")
+        return display(store.note_history(rid, aid, before))
 
     @app.get("/api/runs/{rid}/calls")
     def calls(rid: str):
@@ -146,7 +157,7 @@ def create_app(database=None):
     def csv_export(rid):
         s = store.load(rid)
         out = io.StringIO()
-        fields = ["run_id", "technical_test", "controller", "model", "communication", "seed", "round", "agent", "pond_exact", "weather",
+        fields = ["run_id", "technical_test", "controller", "model", "communication", "seed", "starting_coins", "round", "agent", "profile", "pond_exact", "weather",
                   "profit", "bank", "debt", "request", "delivered", "returned", "used", "sold", "lost", "fees", "revenue", "active"]
         writer = csv.DictWriter(out, fieldnames=fields)
         writer.writeheader()
@@ -155,7 +166,9 @@ def create_app(database=None):
                 writer.writerow({"run_id": rid, "technical_test": s["config"]["test_mode"],
                     "controller": s["config"]["controller"], "model": s["config"]["model"] if s["config"]["controller"] == "ollama" else "scripted",
                     "communication": s["config"]["communication"], "seed": s["config"]["seed"],
-                    "round": row["round"], "agent": aid, "pond_exact": str(row["pond"]), "weather": row["weather"], **data})
+                    "starting_coins": s["config"].get("starting_coins", 200),
+                    "round": row["round"], "agent": aid, "profile": s["agents"][aid]["profile"],
+                    "pond_exact": str(row["pond"]), "weather": row["weather"], **data})
         return out.getvalue()
 
     @app.get("/api/runs/{rid}/download/{kind}")
@@ -257,6 +270,11 @@ def create_app(database=None):
 
     @app.get("/")
     def index():
-        return FileResponse(ROOT / "static/index.html")
+        # A changed asset URL also refreshes tabs whose browser cached an older module.
+        version = implementation_hash[:16]
+        html = (ROOT / "static/index.html").read_text(encoding="utf-8")
+        for asset in ("app.js", "style.css"):
+            html = html.replace(f'"/static/{asset}"', f'"/static/{asset}?v={version}"')
+        return HTMLResponse(html, headers={"Cache-Control": "no-store"})
 
     return app

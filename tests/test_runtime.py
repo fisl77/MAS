@@ -9,7 +9,8 @@ from fastapi.testclient import TestClient
 
 from farm.app import create_app
 from farm.agents import model_decision, TechnicalError, prompt_messages, model_format
-from farm.engine import new_game
+from farm.engine import new_game, advance
+from farm.conversation import speaker_order
 from farm.runner import Runner
 from farm.schema import Config, Decision, response_model
 from farm.store import Store, dumps, loads
@@ -85,8 +86,12 @@ def test_simultaneous_decisions_and_no_request_leak(tmp_path,monkeypatch):
     asyncio.run(run())
     first=[o for a,o in seen if o['phase']==2 and o['conversation_turn']==0]
     assert all(o['messages']==[] for o in first)
+    assert len(first)==1 and first[0]['own_farm']['id']=='A'
+    assert first[0]['conversation_status']['messages_remaining']=={'A':10,'B':10}
     second=[o for a,o in seen if o['phase']==2 and o['conversation_turn']==1]
-    assert all(len(o['messages'])==2 for o in second)
+    assert len(second)==1 and second[0]['own_farm']['id']=='B'
+    assert [m['text'] for m in second[0]['messages']]==['Hello from A']
+    assert all(o['conversation_status']['pass_number']==2 for o in second)
     request_b=next(o for a,o in seen if a=='B' and o['phase']==3)
     assert '19' not in dumps(request_b)
 
@@ -125,6 +130,28 @@ def test_error_status_when_ollama_unavailable(tmp_path,monkeypatch):
     asyncio.run(run())
 
 
+def test_worker_ends_repetition_and_two_silent_passes(tmp_path,monkeypatch):
+    seen=[]
+    async def models():return [{'name':'test-model','digest':'fixed'}]
+    async def decide(s,aid,obs,*args):
+        seen.append((s['phase'],s['turn'],aid))
+        if s['phase']==2:return Decision(pass_turn=False,message='I will request 100 liters.',memory=f'Private step {s["turn"]}')
+        return Decision(request=0) if s['phase']==3 else Decision()
+    monkeypatch.setattr('farm.runner.list_models',models)
+    monkeypatch.setattr('farm.runner.model_decision',decide)
+    async def run():
+        store=Store(tmp_path/'stopping.sqlite3')
+        rid=store.create(new_game(Config(controller='ollama',model='test-model',communication=True,rounds=1)))
+        runner=Runner(store);runner.start(rid);await runner.task
+        s=store.load(rid)
+        assert s['status']=='completed'
+        assert len([x for x in seen if x[0]==2])==5
+        ended=[e for e in store.events(rid) if e['kind']=='conversation_ended']
+        assert [(e['phase'],e['reason'],e['turns']) for e in ended]==[(2,'repetition',5),(7,'all_passed',2)]
+        assert len(s['messages'])==5 and all(m['text']=='I will request 100 liters.' for m in s['messages'])
+    asyncio.run(run())
+
+
 def test_resume_rejects_changed_source_and_prompt_versions(tmp_path):
     async def run():
         store=Store(tmp_path/'version.sqlite3')
@@ -142,22 +169,96 @@ def test_resume_rejects_changed_source_and_prompt_versions(tmp_path):
 def test_prompt_allowlist_and_complete_context_records():
     s=new_game(Config(controller='ollama'));s['config']['seed']=87654321
     s['agents']['B']['memory']='Never leak this foreign note'
-    obs=observation(s,'A',[{'large': 'x'*50000}])
+    obs=observation(s,'A')
+    obs['recalled_observations']=[{'large': 'x'*50000}]  # Previously saved prompt shape
     messages=prompt_messages(s,'A',obs)
     prompt=json.dumps(messages)
     assert '87654321' not in prompt and 'Never leak this foreign note' not in prompt
     assert '1,000 rounds' not in prompt and '0.001' not in prompt
-    assert json.loads(messages[1]['content'])['observation']['recalled_observations']==[]
+    assert 'recalled_observations' not in prompt and 'x'*50000 not in prompt
+    assert json.loads(messages[1]['content'])['observation']['recalled_experiences']==[]
 
 
 def test_phase_specific_schemas_do_not_offer_forbidden_actions():
     for phase, communication, allowed in (
-        (1, True, {'memory','recall_query'}),
+        (1, True, {'memory','recall_query','planned_sowing'}),
         (2, False, {'memory','recall_query','pass_turn'}),
         (3, True, {'memory','recall_query','request'}),
         (4, True, {'memory','recall_query','new_plants','irrigation'}),
         (7, True, {'memory','recall_query','pass_turn','message','contracts'})):
         assert set(response_model(phase,communication).model_json_schema()['properties'])==allowed
+
+
+@pytest.mark.parametrize('phase',[2,7])
+@pytest.mark.parametrize('aid',['A','C'])
+def test_discussion_instructions_preserve_schema_without_suggesting_terms(phase,aid):
+    s=new_game(Config(agent_count=3,communication=True,starting_coins=725,
+                      profiles=['short_term','reciprocal','cunning_experimenter']))
+    s['phase']=phase;s['news_ready']=phase==7
+    s['agents']['B']['memory']='FOREIGN_MEMORY_MUST_STAY_PRIVATE'
+    messages=prompt_messages(s,aid,observation(s,aid))
+    system=messages[0]['content']
+    assert '725 coins (72500 cents)' in system
+    assert 'FOREIGN_MEMORY_MUST_STAY_PRIVATE' not in json.dumps(messages)
+    assert 'Proposal format example' not in system and 'max_request": 100' not in system
+    assert 'Choose participants, dates and limits from your own intended plan' in system
+    other = next(x for x in s['agents'] if x != aid)
+    body={'pass_turn':False,'contracts':[{'kind':'propose','start_round':1+(phase==7),'end_round':3,
+          'limits':[{'agent_id':x,'max_request':13} for x in (aid,other)]}]}
+    model=response_model(phase,True).model_validate(body)
+    decision=Decision.model_validate(model.model_dump())
+    while speaker_order(s)[0]!=aid:
+        advance(s,{speaker_order(s)[0]:Decision()})
+    advance(s,{aid:decision})
+    contract=s['contracts'][0]
+    assert aid in contract['participants'] and contract['signatures']==[aid]
+    assert contract['start_round']==1+(phase==7)
+    assert set(contract['participants']).issubset(observation(s,aid)['active_agents'])
+    other=next(x for x in contract['participants'] if x!=aid)
+    while speaker_order(s)[0]!=other:
+        advance(s,{speaker_order(s)[0]:Decision()})
+    advance(s,{other:Decision(pass_turn=False,contracts=[{'kind':'accept','contract_id':contract['id']}])})
+    assert contract['id']==s['contracts'][0]['id'] and s['contracts'][0]['status']=='active'
+
+
+def test_new_profile_is_private_and_communication_off_has_no_public_conversation_guide():
+    s=new_game(Config(profiles=['cunning_experimenter','reciprocal']))
+    s['phase']=2
+    a=prompt_messages(s,'A',observation(s,'A'))
+    b=prompt_messages(s,'B',observation(s,'B'))
+    assert 'truthful private records' in a[0]['content']
+    assert 'truthful private records' not in b[0]['content']
+    assert 'PUBLIC CONVERSATION SKILLS' not in a[0]['content']
+    assert 'message' not in json.loads(a[1]['content'])['response_schema']['properties']
+    assert 'conversation_status' not in json.loads(a[1]['content'])['observation']
+
+
+@pytest.mark.parametrize('phase',[2,7])
+def test_last_pass_proposal_allows_acceptance_in_a_later_conversation(phase):
+    s=new_game(Config(communication=True))
+    s['phase']=phase;s['turn']=15;s['news_ready']=phase==7
+    s['conversation_budget']={'round':1,'phase':phase,'messages_used':{'A':9,'B':10},'quiet_passes':0,'passed_agents':[]}
+    obs=observation(s,'A')
+    status=obs['conversation_status']
+    assert status['pass_number']==16 and status['own_messages_remaining']==1
+    assert status['exhausted_agents']==['B']
+    assert not status['can_receive_reply_before_phase_end']
+    system=prompt_messages(s,'A',obs)[0]['content']
+    assert 'Unable to speak (budget exhausted): B' in system
+    assert 'permits acceptance in a later conversation' in system
+    body={'pass_turn':False,'contracts':[{'kind':'propose','start_round':2,'end_round':3,
+          'limits':[{'agent_id':x,'max_request':13} for x in ('A','B')]}]}
+    advance(s,{'A':Decision.model_validate(body)})
+    # After phase 2's last pass, the next window is NEWS. After phase 7, it is next round's discussion.
+    while not (s['phase']==2 or (s['phase']==7 and s['news_ready'])):
+        decisions={a:Decision(request=0) if s['phase']==3 else Decision() for a in s['agents']} if s['phase'] in (1,3,4) else {}
+        advance(s,decisions)
+    cid=s['contracts'][0]['id']
+    assert s['contracts'][0]['status']=='proposed'
+    while speaker_order(s)[0]!='B':
+        advance(s,{speaker_order(s)[0]:Decision()})
+    advance(s,{'B':Decision(pass_turn=False,contracts=[{'kind':'accept','contract_id':cid}])})
+    assert s['contracts'][0]['status']=='active'
 
 
 def test_conversation_requires_explicit_boolean_participation():
@@ -242,6 +343,21 @@ def test_api_and_exports(tmp_path):
         assert (tmp_path/'export'/f'{rid}.json').exists()
 
 
+def test_dashboard_refreshes_asset_urls_after_an_update(tmp_path,monkeypatch):
+    pages=[]
+    for version in ('a'*64,'b'*64):
+        monkeypatch.setattr('farm.app.source_hash',lambda:version)
+        with TestClient(create_app(tmp_path/(version[0]+'.sqlite3'))) as client:
+            page=client.get('/',headers={'If-None-Match':'"old-page"'})
+            assert page.status_code==200 and page.headers['cache-control']=='no-store'
+            assert f'/static/app.js?v={version[:16]}' in page.text
+            assert f'/static/style.css?v={version[:16]}' in page.text
+            script=client.get(f'/static/app.js?v={version[:16]}')
+            assert script.status_code==200 and 'cunning_experimenter' in script.text
+            pages.append(page.text)
+    assert pages[0]!=pages[1]
+
+
 def test_paired_queue_uses_shared_weather_not_memories(tmp_path):
     app=create_app(tmp_path/'test.sqlite3')
     with TestClient(app) as client:
@@ -259,6 +375,32 @@ def test_paired_queue_uses_shared_weather_not_memories(tmp_path):
         sa=app.state.store.load(a['run_id']);sb=app.state.store.load(b['run_id'])
         assert [x['weather'] for x in sa['history']]==[x['weather'] for x in sb['history']]
         assert a['pair']==b['pair'] and sa['config']['communication'] is False and sb['config']['communication'] is True
+
+
+def test_custom_capital_profile_exports_and_queues(tmp_path):
+    import csv
+    import io
+    app=create_app(tmp_path/'capital.sqlite3')
+    with TestClient(app) as client:
+        config={'rounds':1,'starting_coins':725,'profiles':['cunning_experimenter','reciprocal']}
+        rid=client.post('/api/runs',json=config).json()['id']
+        initial=client.get('/api/runs/'+rid).json()['state']
+        assert initial['agents']['A']['bank']==72500 and initial['agents']['A']['profile']=='cunning_experimenter'
+        assert client.post('/api/runs',json={'starting_coins':0}).status_code==422
+        client.post(f'/api/runs/{rid}/start')
+        async def join():await app.state.runner.task
+        client.portal.call(join)
+        exported=client.get(f'/api/runs/{rid}/download/json').json()
+        assert exported['state']['config']['starting_coins']==725
+        rows=list(csv.DictReader(io.StringIO(client.get(f'/api/runs/{rid}/download/csv').text)))
+        assert rows[0]['starting_coins']=='725' and rows[0]['profile']=='cunning_experimenter'
+        queue=client.post('/api/experiments',json={'base':initial['config'],'seeds':[42],
+                            'balance_positions':False}).json()
+        for item in queue['runs']:
+            state=app.state.store.load(item['run_id'])
+            assert state['config']['starting_coins']==725
+            assert state['agents']['A']['bank']==72500
+            assert state['agents']['A']['profile']=='cunning_experimenter'
 
 
 def test_pause_queue_saves_current_decision_and_leaves_next_game_untouched(tmp_path,monkeypatch):
@@ -293,3 +435,39 @@ def test_pause_queue_saves_current_decision_and_leaves_next_game_untouched(tmp_p
         assert app.state.store.decision(first,'1:1:0:A') is not None
         assert app.state.store.load(second)==next_initial
         assert app.state.store.decision(second,'1:1:0:A') is None
+
+
+def test_pause_between_public_speakers_reuses_accepted_action_and_publishes_once(tmp_path, monkeypatch):
+    async def run():
+        path = tmp_path / 'speakers.sqlite3'
+        store = Store(path)
+        s = new_game(Config(controller='ollama', communication=True, rounds=1))
+        s['phase'] = 2
+        rid = store.create(s)
+        runner = Runner(store)
+        seen = []
+        async def models():
+            return [{'name':s['config']['model'], 'digest':'fixture'}]
+        async def choose(state, aid, obs, *args):
+            if state['phase']==2:
+                seen.append((state['turn'], aid))
+                if state['turn']==0:
+                    return Decision(pass_turn=False,message='How did your seedlings grow?')
+                if state['turn']==1:
+                    assert aid=='B' and obs['messages'][-1]['sender']=='A'
+                    assert store.load(rid)['messages'][-1]['sender']=='A'
+                    runner.pause(rid)
+                    return Decision(pass_turn=False,message='I have no measurements yet.')
+            return Decision(request=0) if state['phase']==3 else Decision()
+        monkeypatch.setattr('farm.runner.list_models', models)
+        monkeypatch.setattr('farm.runner.model_decision', choose)
+        runner.start(rid); await runner.task
+        paused = store.load(rid)
+        assert paused['status']=='paused' and speaker_order(paused)[0]=='B'
+        assert store.decision(rid,'1:2:1:B')['message']=='I have no measurements yet.'
+        reopened=Store(path); runner=Runner(reopened)
+        runner.start(rid); await runner.task
+        assert reopened.load(rid)['status']=='completed'
+        assert seen==[(0,'A'),(1,'B'),(2,'A'),(3,'B')]
+        assert [(e['sender'],e['turn']) for e in reopened.events(rid) if e['kind']=='message']==[('A',0),('B',1)]
+    asyncio.run(run())

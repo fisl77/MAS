@@ -1,14 +1,16 @@
 # Authoritative rule reference — researcher only
 
-Rule version: `farm-1.0`. This file is not an agent prompt.
+Rule version: `farm-1.5`. This file is not an agent prompt.
 
 ## Starting state and objective
 
-Each farm starts empty, with 200 coins and no debt. The shared pond starts at
+Each farm starts empty, with configurable starting coins (default 500) and no debt.
+Starting coins must be a positive whole number and are equal for all farms in a game.
+Historical games without this setting started with 200 coins. The shared pond starts at
 5,000 liters and holds at most 50,000. Profit is sales minus delivery and return
 expenses. Starting capital is not profit. Always reconcile:
 
-`available balance − debt = 200 coins + cumulative profit`.
+`available balance − debt = configured starting coins + cumulative profit`.
 
 Only active farms can win. The highest cumulative profit among active farms wins;
 ties have multiple winners. If nobody survives, nobody wins. The final ranking
@@ -72,6 +74,24 @@ Dry days add nothing. Apply rain after returns, then discard capacity overflow.
 
 The next round starts only after phase 7. If all farms are eliminated, weather and
 the pond series continue without agent actions to the configured final round.
+
+Public discussion and post-NEWS each give every active farm ten actual contributions.
+A message and/or formal agreement actions consume one contribution; passing or private
+notes consume none. One farm speaks per turn. The discussion opener rotates each round, starting
+with the configured starting farm. NEWS opens with the next eligible farm after that discussion's
+opener. Each published turn, including agreement actions, is committed before the next farm decides.
+After a pass a farm can still reply. All remaining eligible farms passing consecutively, exhausted
+budgets or two full cycles of passes and repeated contributions end the phase. New claims, first
+personal stances, changed offers and fresh signatures reset the cycle counter. A change of agreement
+ID alone in the text is an echo. The model gets one chance to reconsider an echo and may publish it.
+Private reflection ends after two silent steps or ten steps. Water orders remain simultaneous.
+Identical pending/active agreement terms reuse a contract ID; an explicit matching
+proposal signs those same terms for that actor. Already recorded signatures do not
+create progress or new agreements. Different terms are not coalesced.
+
+Own watering trials are stored as measured evidence independently of model notes.
+The evidence contains only observed outcomes, never hidden biology. It does not reject
+biologically harmful decisions or automatically substitute a better farming policy.
 
 ## Official observations
 

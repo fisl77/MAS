@@ -6,6 +6,7 @@ from .agents import TechnicalError, list_models, model_decision, scripted
 from .engine import advance, active_ids, validate_decision
 from .schema import Decision, RULE_VERSION, PROMPT_VERSION
 from .views import observation
+from .conversation import speaker_order
 
 
 class Runner:
@@ -63,15 +64,16 @@ class Runner:
                 decisions = {}
                 needs_decisions = s["phase"] in (1, 2, 3, 4) or (s["phase"] == 7 and s["news_ready"])
                 if needs_decisions:
-                    # Frozen shared state for the entire pass, regardless of inference order.
-                    for aid in active_ids(s):
+                    # Public turns commit individually. Private simultaneous decisions share a frozen state.
+                    participants = (speaker_order(s)[:1] if s['config']['communication'] and s['phase'] in (2, 7)
+                                    else active_ids(s))
+                    for aid in participants:
                         key = f"{s['round']}:{s['phase']}:{s['turn']}:{aid}"
                         saved = self.store.decision(rid, key)
                         if saved is not None:
                             decisions[aid] = Decision.model_validate(saved)
                             continue
-                        recalled = self.store.recall(rid, aid, s["agents"][aid]["recall_query"], limit=3)
-                        obs = observation(s, aid, recalled)
+                        obs = observation(s, aid, store=self.store, rid=rid)
                         self.progress = {"agent": aid, "round": s["round"], "phase": s["phase"], "turn": s["turn"]}
                         decision = (scripted(s, aid) if s["config"]["controller"] == "test"
                                     else await model_decision(s, aid, obs, self.store, rid, key))

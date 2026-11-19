@@ -73,7 +73,88 @@ the game visibly as a technical error. No substitute policy or invented successf
 action is inserted. A pause request waits for the in-flight call to finish and saves
 its validated decision before stopping.
 
-Prompt version `farm-agent-1.3` requires an explicit boolean `pass_turn` in every
+New games default to **500 starting coins per farm**. Set any positive whole-coin
+amount in **New game → Starting coins per farm**. The amount is recorded in the
+game configuration, agent instructions, JSON/CSV exports and paired experiment queues.
+Recorded games without this setting retain their historical 200-coin starting capital.
+
+Farm-work responses combine identical treatments using `count`; different doses
+remain separate. With zero delivery, only one sowing dose is possible, so the model
+format permits one combined new-plant entry and one irrigation entry per existing
+group. This does not cap plant counts. A length-terminated, incomplete JSON response
+is recorded as truncated and never executed; correction asks for fresh, compact JSON
+without replaying the repetitive fragment. Complete valid JSON at the output boundary
+is still accepted. Configured context/output limits remain unchanged.
+
+Prompt version `farm-agent-1.13` teaches active public conversation: respond to peers,
+ask specific questions, challenge claims and negotiate concrete offers rather than
+copying private memories. Passing is encouraged when there is nothing new to contribute.
+Conversation phases include a structured agreement guide and a proposal format example.
+Agents also receive the current pass, remaining reply opportunities, eligible farms,
+and publicly known eliminations. They are warned when no reply can arrive within the
+current phase, and that passing once does not permanently remove a farm. New multiparty
+proposal examples in the last pass start no earlier than the next round, allowing
+later signatures before expiry. No in-flight decisions or unpublished eliminations
+are disclosed by these availability indicators.
+Agreements remain voluntary even after signing; breaches are measured without blocking
+actions or imposing extra fines. Cancellation takes effect from the next round.
+
+The demonstration default is **llama3.1:8b**; refreshing installed models preserves
+an existing selection. No model is downloaded automatically. Date bounds in agreement
+schemas and correction feedback use the actual current round and phase.
+
+Each farm also receives a separate **measured cultivation evidence** record. It is
+built only from its executed actions and plant results, not from private guesses or
+peer claims. It persists when short-term plant results clear, and compactly distinguishes
+failed doses, surviving treatments and healthy growth. Public claims are labelled as
+unverified in model context. For exploration, farms are advised to try 1–5 comparable
+plants per dose, initially around 1 L apart. After contrasting outcomes they can refine
+that interval in later rounds (e.g. 0.1 L steps). After uniform failures they are advised
+to widen the search. The farm receives optional comparisons derived from its own
+measured seedling outcomes. Its private sowing plan carries counts, doses and the
+exact water total through ordering and farm work for the current round. The agent
+chooses the actual order and treatments after considering existing plants and delivery.
+Production can scale after healthy growth across rounds at the same stage when the farm
+expects to afford future irrigation. The simulation allows any physically feasible batch size.
+The dashboard sums plant observations per stage and dose across rounds.
+
+The new **Cunning experimenter** profile combines cautious planning and small farming
+experiments with strategic deception in public messages, opportunistic agreements,
+and an aim to outlast rivals. Its private observations and accounting remain factual;
+it has no extra tools, information or power over other farms. This is an instruction
+for autonomous Ollama agents, not a guarantee of behavior or a different scripted policy.
+
+The prompt retains basic farming knowledge: rain/dry days affect
+pond inflow only, water must be requested for both existing and intended new plants,
+and farm work supports per-plant or subgroup watering of multiple plants per round.
+It explains sowing, automatic harvest, observations, and adapting treatments from
+measured growth, health and costs. Exact biological thresholds remain hidden.
+Prompt `farm-agent-1.21` selects separate instructions for planning, ordering,
+farm work, private reflection and public discussion. Farm work includes current
+delivery, all plant groups and the shared allocation budget. The conversation
+and signature instructions appear during public discussion and post-NEWS dialogue.
+Create a new game after restarting the server; old games keep their recorded versions
+and cannot be resumed under the changed prompt/source.
+
+During planning each farm chooses a private focus and writes its own next move.
+The near-term profile selects a cost or income consideration. The reciprocal
+profile chooses a known active peer or an independent check. The experimenter
+chooses a trial outcome, disclosure decision or reason to defer. Later turns
+can revise the plan or update only an open question or insight.
+
+For a measured crop result, a farm can insert `[[trial]]` as a standalone
+sentence. The server fills it from an executed observation on that farm, or
+states that a result is unavailable. A check for unsupported accounts of crop
+trials gives the speaker one revision. If the problem persists, the affected
+message or note is withheld and the raw attempts remain in the research trace.
+Peer statements retain their source. The cunning profile can explicitly choose
+a bluff with a private intended benefit on the original draft. The researcher
+can inspect its most recent declaration under **Agent laboratory → Private working memory**.
+Intent is self-reported and free-text checks cannot establish a speaker's beliefs.
+
+Rule version `farm-1.5` gives each farm ten public contributions per phase. Public turns rotate
+between farms. The discussion starter rotates each round and its successor opens after NEWS.
+The prompt requires an explicit boolean `pass_turn` in every
 discussion or reflection response. Missing choices are rejected instead of silently
 defaulting to passing. Repair feedback explicitly explains that messages and contract
 actions require `pass_turn: false`; after two failed repairs the visible error includes
@@ -100,18 +181,75 @@ developer-only rule document is never read by the model adapter.
 ## Communication and agreements
 
 Only discussion (phase 2) and post-NEWS reflection (phase 7) permit public messages.
-Each allows up to ten contributions per active agent. Contributions are collected
-against the same snapshot and published together after each pass. If all agents
-pass, the phase ends. A pass does not prevent later participation if peers continue.
-Messages are bounded to 2,000 characters. A contribution may include up to ten
-structured agreement actions; a contract-only contribution still uses one slot.
-All contributions use the same pre-pass state. Simultaneous rejections are resolved
-before acceptances. Actions made obsolete by another action in that pass are
-recorded as not applied, with a public outcome, instead of blocking the game.
+Each farm has **ten actual public contributions** in each phase. A message and/or
+contract actions in one response count as one contribution. Passing, silence and
+private memory updates count as zero. There is no fixed ten-pass deadline. A farm
+that passes may return later; one that used all ten contributions is not called again
+until the next conversation phase. Observations show every farm's remaining budget.
 
-With communication off, agents can use the same maximum number of private thinking
-steps in both phases. They can stop early. Equal opportunity budgets do not imply
-identical inference counts or time; all actual model calls and tokens are recorded.
+The phase ends when all remaining eligible farms pass consecutively, everyone has used the
+budget, or two full cycles pass without new content or changed agreement state. Every speaker
+sees the last published turn immediately. Checkpoints preserve the speaker order and counters.
+Original messages are retained and ending reasons/budgets are shown in Conversation.
+
+Repetition checks compare all speakers, while protecting fresh concise personal
+consent and actual new signatures. Two full speaking cycles without new content or any
+changed agreement end the phase early. One repeated draft can be reconsidered within
+the existing response-attempt limit before publication. Every original draft remains
+in the call log and every published response remains in the event log. A repeated
+final response contributes to the phase progress counter. Identical agreement
+terms reuse the same contract ID; an explicit identical proposal adds the proposer's
+signature to those exact terms if it is new. Repeating one's own signature changes
+nothing. Changed participants, limits, dates or replacement references remain distinct.
+
+Conversation instructions describe proposing and responding in words, with the schema
+providing the action syntax. Each farm chooses its own amounts, participants and dates.
+Agents also choose their own conversation topic: cultivation, observations, trial
+design, strategy, costs, trust and negotiations are equally available. There are no
+topic quotas, compulsory stages or obligations to disclose knowledge. Information
+may be shared, withheld, questioned or strategically misrepresented according to
+the profile; private observations remain distinct from public claims. Without trial
+results, agents can discuss hypotheses and proposed experiments. Contract operation
+is a separate compact reference, not the expected outcome of every exchange.
+Profiles prompt an individual assessment of costs, immediate gains, reciprocity or
+strategic advantage. Delivery and return charges remain payable by the receiving
+farm, including when it signs an agreement. Experiments use the configured temperature
+and record every retry.
+
+Common fee-sharing or fee-waiver claims trigger an advisory review before publication,
+once per decision, independently of the echo review and two allowed format corrections. This
+heuristic does not establish whether a statement is false or intentionally deceptive.
+The model chooses its final statement; the cunning profile may still deliberately
+mislead peers, while its private calculations must use the actual fees. Agreement
+limits are upper bounds, not water orders or required quantities. Separate output
+schema alternatives prevent a pass from also containing text or agreement actions.
+
+New model proposals use a `limits` object keyed by participating farm ID. The
+proposer's key is required; the output schema allows each visible farm once and
+requires a request bound, a net-use bound, or both. The adapter translates the
+explicit keys into the existing stored list format without inventing participants,
+merging conflicting bounds or changing amounts. Duplicate JSON keys are rejected
+before parsing can overwrite them. Legacy list replies still receive full validation;
+participant errors identify the duplicated or missing farm. Formal agreements only
+represent fixed bounds and dates, not additional conditional clauses in public prose.
+
+Temperature controls variation in model output. Zero makes comparable inputs more
+repeatable; higher values allow more variation and may increase errors. It does not
+give agents additional knowledge or guarantee distinct strategies. The selected
+value is stored with each game and used unchanged for its model calls.
+
+Each public decision and its contract actions publish before the next farm speaks. Private orders
+still share a frozen state. Newly generated public model messages are
+limited to 600 characters, with instructions for one focused contribution in one
+to three short sentences. Oversized unconstrained replies receive model-selected
+correction within the existing attempt budget; published text is never automatically
+truncated. Internal decisions retain the historical 2,000-character capacity, and
+stored records are unchanged. Up to ten agreement actions remain available per
+contribution. No private notes are automatically published.
+
+With communication off, private reflection has up to ten thinking steps and ends after
+two consecutive silent steps. Public contribution counts and private step counts are
+different budgets; actual calls and timing are recorded separately.
 
 Agreements contain one request and/or net-withdrawal limit per participant and a
 bounded round interval. The proposer signs the proposed version. Every participant
@@ -130,11 +268,35 @@ compliance denominators; affected joint results are `not_applicable`. Any availa
 in-round limit checks are still retained as evidence. The remaining participants'
 individual results continue to be evaluated. There are no extra penalties.
 
+Farm-water validation reports the exact combined spending of new and existing
+plants, each subtotal and any excess. The model receives an explicit shared
+budget; sowing and simultaneous comparisons remain optional. Individual doses
+in the response format cannot exceed the delivered water, while combined totals
+are still validated exactly. These are physical availability bounds, not plant
+growth thresholds. Rejected allocations are never automatically scaled or
+executed. Corrections receive a precise accounting ledger and fresh response
+instructions. A recovered run error also clears from the dashboard on refresh.
+
+When a validly formatted farm plan overspends, a private budget-planning tool
+replaces repeated whole-plan arithmetic corrections. The model chooses which
+of its proposed treatments to keep, revise, cancel or omit. Keeping a treatment
+is offered only when its complete cost fits the remaining supply. For revisions,
+the model selects a count and then a dose constrained by remaining water/count.
+Each selection updates an exact unexecuted draft. Exhausted water implies zero
+for unselected existing plants under normal rules; new zero-water planting still
+requires an explicit model choice. Only the final validated plan is accepted
+and executed once. Rejected private notes are not written. Tool calls are
+separate traces linked to the base action, not extra public messages or recalled
+observations. Valid initial plans retain the usual single-call path. Recovery
+can require additional model calls; invalid tool choices still stop visibly
+after their allowed corrections. No amounts are automatically scaled and no
+substitute farming strategy is inserted.
+
 ## Persistence and reproducibility
 
 `data/lab.sqlite3` contains the authoritative checkpoint, append-only events,
 accepted decisions, observations, model request/response traces, and experiment
-queues. The directory is ignored by Git. Phases and conversation passes commit
+queues. The directory is ignored by Git. Phases and public speaking turns commit
 state and events in the same transaction. Each decision has the stable key
 `round:phase:turn:agent`, unique within its game. Restart reuses accepted decisions
 instead of requesting or executing them twice. An interrupted, unaccepted model
@@ -143,14 +305,40 @@ request may be retried, but has no game effects before acceptance.
 The complete JSON export includes rule/prompt versions, source SHA-256, runtime,
 config, model digest, weather state, raw and corrected responses, actual decisions,
 events, and final status. Exact fractions are encoded as
-`{"$fraction": ["numerator", "denominator"]}`. CSV money columns are **cents**;
-water columns use exact integer or numerator/denominator notation. CSV includes
-test/research and controller labels. These are researcher exports containing
+`{"$fraction": ["numerator", "denominator"]}`. CSV balances, profit, fees and revenue
+are **cents**; `starting_coins` is the configured amount in whole **coins**.
+Water columns use exact integer or numerator/denominator notation. CSV includes
+test/research and controller labels, starting coins, and each farm's profile. These are researcher exports containing
 private data, not inputs for agents.
 
-The dashboard conversation shows the most recent 200 contributions; the complete
-conversation remains in the JSON event ledger. Agent context uses the latest 30
-contributions plus bounded, owner-scoped recall. Plant identifiers use independent
+The dashboard conversation shows the latest 200 contributions. Every original
+message is retained in the event ledger. In phases that use conversation history,
+public turns emphasize the last contribution, a direct question since the speaker's previous
+contribution, and at most one relevant owner observation. Peer claims retain their attribution.
+The compact agreement register puts mentioned IDs and proposals awaiting this farm's signature
+first and preserves every open or active agreement's exact terms.
+
+Each farm has three private working notes of up to 240 characters each: a goal,
+an open question and an insight. Omitted fields persist and an empty string clears
+that field. The farm sees up to four distinct recent watering outcomes with before
+and after growth and health. Its separate SQLite experience archive records every
+executed group treatment, rounds of account activity and its own agreement evaluations.
+Archive writes commit with the corresponding game events. Each decision retrieves
+up to three compact records scoped to that game and farm. A recall query can select
+a dose, group, round, fees or agreement. Default retrieval uses the phase and skips
+measurements already shown. Original decisions, notes, observations, dialogue and
+model traces remain available in the full JSON export, including for earlier runs.
+Further history reductions are disclosed in `context_window`.
+Current inventories, balances and agreement terms remain complete; repeated record keys
+can be packed into lossless columns/rows tables. Compact JSON and schema constraints
+avoid repeated annotations. Every request, including corrective attempts, obeys the
+same conservative input budget, reserving the configured output allowance. Only the
+latest failed answer is included for correction; oversized failed text stays in the
+trace and its omission is disclosed. If `qwen3.5:9b` exhausts its output allowance
+with an empty visible answer, its remaining attempts for that decision request a
+direct answer using `think: false`. They keep the same observation, output allowance
+and validation. An inherently oversized current state still stops
+explicitly rather than discarding actionable records. Plant identifiers use independent
 per-farm counters, and elimination membership changes reach agent observations only
 with official NEWS, avoiding incidental information leaks through implementation details.
 

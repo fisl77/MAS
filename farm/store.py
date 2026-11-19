@@ -7,6 +7,9 @@ import sqlite3
 import time
 import uuid
 
+from .experience import ARCHIVE_SCHEMA, recall_experiences, save_experiences
+from .memory import PUBLIC_SCHEMA, decision_recall, save_public_memory
+
 
 def encode(value):
     if isinstance(value, Fraction):
@@ -59,6 +62,8 @@ class Store:
             CREATE INDEX IF NOT EXISTS observation_owner ON observations(run_id,agent_id,id);
             CREATE TABLE IF NOT EXISTS experiments(id TEXT PRIMARY KEY, body TEXT);
             """)
+            db.executescript(ARCHIVE_SCHEMA)
+            db.executescript(PUBLIC_SCHEMA)
             # Reconcile an older worker's resumed writes before using cached counters.
             db.execute("""DELETE FROM call_totals WHERE calls !=
                 (SELECT COUNT(*) FROM calls WHERE calls.run_id=call_totals.run_id)""")
@@ -103,6 +108,9 @@ class Store:
         with self.connection() as db:
             db.execute("UPDATE runs SET state=?,updated=? WHERE id=?", (dumps(persisted), time.time(), rid))
             db.executemany("INSERT INTO events(run_id,body) VALUES(?,?)", [(rid, dumps(x)) for x in events])
+            save_experiences(db, rid, state, events)
+            if state['config']['communication']:
+                save_public_memory(db, rid, events, state['contracts'])
         state["events"] = []
 
     def list(self):
@@ -132,6 +140,7 @@ class Store:
                  body["prompt_tokens"] + body["completion_tokens"]))
 
     def recall(self, rid, aid, query="", limit=5):
+        """Historical observation inspector. Agent decisions use experiences instead."""
         with self.connection() as db:
             rows = db.execute("SELECT body FROM observations WHERE run_id=? AND agent_id=? ORDER BY id DESC", (rid, aid))
             result = []
@@ -145,6 +154,28 @@ class Store:
                     if len(result) == limit:
                         break
         return result
+
+    def experiences(self, rid, aid, observation, query):
+        with self.connection() as db:
+            return recall_experiences(db, rid, aid, observation, query)
+
+    def decision_recall(self, rid, aid, observation, query, turn_text, public):
+        with self.connection() as db:
+            return decision_recall(db, rid, aid, observation, query, turn_text, public)
+
+    def note_history(self, rid, aid, before=None):
+        with self.connection() as db:
+            rows = db.execute("SELECT id,body FROM events WHERE run_id=? AND id<? "
+                              "AND json_extract(body,'$.kind')='note_changed' AND json_extract(body,'$.agent_id')=? "
+                              "ORDER BY id DESC LIMIT 51", (rid, before or 2**63-1, aid)).fetchall()
+        return {'changes': [dict(id=k, **loads(b)) for k,b in rows[:50]],
+                'before': rows[49][0] if len(rows) > 50 else None}
+
+    def last_observation(self, rid, aid):
+        with self.connection() as db:
+            row = db.execute("SELECT body FROM observations WHERE run_id=? AND agent_id=? "
+                             "ORDER BY id DESC LIMIT 1", (rid, aid)).fetchone()
+        return loads(row[0]) if row else None
 
     def events(self, rid, after=0, limit=200):
         with self.connection() as db:
@@ -168,8 +199,10 @@ class Store:
                 "SELECT agent_id,action_id,body FROM observations WHERE run_id=? ORDER BY id", (rid,))]
             decisions = [{"action_id": k, "decision": loads(b)} for k, b in db.execute(
                 "SELECT action_id,response FROM decisions WHERE run_id=? ORDER BY action_id", (rid,))]
+            experiences = [{"agent_id": aid, **json.loads(body)} for aid, body in db.execute(
+                "SELECT agent_id,body FROM experiences WHERE run_id=? ORDER BY round,agent_id,kind,subject", (rid,))]
         return {"state": self.load(rid), "events": self.events(rid, limit=10**9), "calls": self.calls(rid),
-                "observations": observations, "decisions": decisions}
+                "observations": observations, "decisions": decisions, "experiences": experiences}
 
     def save_experiment(self, eid, body):
         with self.connection() as db:

@@ -3,7 +3,16 @@ from copy import deepcopy
 from fractions import Fraction as F
 import random
 
-from .schema import Config, Decision, RULE_VERSION, PROMPT_VERSION, water
+from .schema import (Config, Decision, RULE_VERSION, PROMPT_VERSION,
+                     PUBLIC_MESSAGE_LIMIT, QUIET_PASS_LIMIT, REPETITION_PASS_LIMIT,
+                     PRIVATE_REFLECTION_STEP_LIMIT, water, working_notes)
+from .conversation import (classify_public_pass, current_progress, eligible_speakers, phase_budget,
+                           retain_public_history, speaker_order)
+from .evidence import record_trial
+from .water_budget import WaterBudgetError, allocation_report
+
+class PlantAvailabilityError(ValueError):
+    """An irrigation row exceeds the group's remaining plant count."""
 
 PHASES = {1: "Planning", 2: "Discussion", 3: "Requests and delivery", 4: "Farm work",
           5: "Growth and harvest", 6: "Returns and weather", 7: "NEWS and reflection"}
@@ -33,8 +42,8 @@ def new_game(config: Config):
          "next_contract": 1, "eliminated_this_round": [], "ranking": [], "model_digest": None}
     for i, profile in enumerate(config.profiles):
         aid = chr(65 + i)
-        s["agents"][aid] = {"id": aid, "profile": profile, "active": True, "bank": 20000,
-            "profit": 0, "debt": 0, "plants": [], "memory": "", "recall_query": "",
+        s["agents"][aid] = {"id": aid, "profile": profile, "active": True, "bank": config.starting_coins * 100,
+            "profit": 0, "debt": 0, "plants": [], "memory": {}, "recall_query": "",
             "request": 0, "delivered": 0, "returned": F(0), "used": F(0),
             "sold": 0, "lost": 0, "fees": 0, "revenue": 0, "eliminated_round": None,
             "recent_plant_results": [], "next_group": 1}
@@ -155,24 +164,32 @@ def validate_decision(s, aid, d: Decision):
         raise ValueError("Public communication is unavailable in this phase.")
     if d.pass_turn and (d.message or d.contracts):
         raise ValueError("A contribution cannot also pass the turn.")
+    if d.private_bluff_reason and (a['profile'] != 'cunning_experimenter' or not d.message.strip()
+                                   or not d.private_bluff_reason.strip()):
+        raise ValueError("A private bluff reason requires a cunning farm and a public statement.")
     if phase != 3 and d.request is not None:
         raise ValueError("Water requests are only accepted in the request phase.")
+    if phase != 1 and d.planned_sowing is not None:
+        raise ValueError("A provisional sowing plan belongs to the planning phase.")
     if phase == 3 and d.request is None:
         raise ValueError("Provide a whole-liter water request.")
     if phase != 4 and (d.new_plants or d.irrigation):
         raise ValueError("Planting and irrigation are only available during farm work.")
+    if phase in (2, 7) and s['config']['communication'] and (d.message.strip() or d.contracts):
+        if phase_budget(s)['messages_used'].get(aid, 0) >= PUBLIC_MESSAGE_LIMIT:
+            raise ValueError(f"Farm {aid} has used all {PUBLIC_MESSAGE_LIMIT} public contributions in this phase. Pass or wait for the next conversation phase.")
     if phase == 4:
         available = {g["id"]: g["count"] for g in a["plants"]}
         total = F(0)
         for x in d.irrigation:
             if x.group_id not in available or x.count > available[x.group_id]:
-                raise ValueError("Select available plants belonging to your farm.")
+                raise PlantAvailabilityError(f"Farm {aid} requested {x.count} plants in {x.group_id}; "
+                                             f"{available.get(x.group_id, 0)} still available for irrigation.")
             available[x.group_id] -= x.count
             total += x.count * water(x.water_per_plant)
         total += sum((x.count * water(x.water_per_plant) for x in d.new_plants), F(0))
         if total > a["delivered"]:
-            raise ValueError(f"Irrigation totals {total} liters but your delivery is {a['delivered']} liters. "
-                             "Reduce the total. With zero delivered water, every water_per_plant must be the string '0'.")
+            raise WaterBudgetError(allocation_report(a['delivered'], d.new_plants, d.irrigation))
     if d.contracts:
         from .contracts import apply_contract_action
         temp = deepcopy(s)
@@ -181,9 +198,28 @@ def validate_decision(s, aid, d: Decision):
 
 
 def apply_memory(s, aid, d):
-    if d.memory is not None:
-        s["agents"][aid]["memory"] = d.memory
-    s["agents"][aid]["recall_query"] = d.recall_query
+    agent = s["agents"][aid]
+    if d.private_bluff_reason:
+        agent['last_deliberate_bluff'] = {'round': s['round'], 'phase': s['phase'], 'turn': s['turn'],
+                                         'statement': d.message, 'intended_benefit': d.private_bluff_reason}
+    if d.planned_sowing is not None:
+        agent['planned_sowing'] = [entry.model_dump() for entry in d.planned_sowing]
+    if isinstance(d.memory, str):
+        agent["memory"] = d.memory  # Replay historical accepted decisions verbatim.
+    elif d.memory is not None:
+        notes = working_notes(agent["memory"])
+        for field, raw in d.memory.model_dump(exclude_none=True, exclude={'based_on'}).items():
+            value = raw.strip()
+            if notes.get(field, '') == value:
+                continue
+            emit(s, 'note_changed', agent_id=aid, turn=s['turn'], field=field,
+                 previous=notes.get(field), value=value or None, evidence=d.note_evidence)
+            if value:
+                notes[field] = value
+            else:
+                notes.pop(field, None)
+        agent["memory"] = notes
+    agent["recall_query"] = d.recall_query
 
 
 def farm_work(s, aid, d):
@@ -213,6 +249,7 @@ def grow(s):
         a["recent_plant_results"] = []
         for g in a["plants"]:
             before = {"growth": g["growth"], "health": g["health"]}
+            newly_sown = g.get('new', False)
             growth, hp = plant_change(g["growth"], g["health"], g.get("water", F(0)), g.get("new", False))
             g.update(growth=growth, health=hp, new=False)
             if hp == 0:
@@ -229,8 +266,10 @@ def grow(s):
             else:
                 alive.append(g)
                 outcome = "growing"
-            emit(s, "plant_result", agent_id=aid, group=deepcopy(g), before=before, outcome=outcome)
-            a["recent_plant_results"].append({"round": s["round"], "group": deepcopy(g), "before": before, "outcome": outcome})
+            record_trial(a, s['round'], before, g, newly_sown, outcome)
+            result = {"group": deepcopy(g), "before": before, "newly_sown": newly_sown, "outcome": outcome}
+            emit(s, "plant_result", agent_id=aid, **result)
+            a["recent_plant_results"].append({"round": s["round"], **result})
         a["plants"] = alive
 
 
@@ -286,48 +325,91 @@ def finish(s):
     emit(s, "completed", ranking=s["ranking"])
 
 
-def advance(s, decisions=None):
-    """Advance one atomic phase or one synchronous conversation pass."""
+def public_turn(s, decisions):
+    """Publish the current farm's choice and account for one durable speaking turn."""
     from .contracts import apply_contract_action
+    if not decisions:
+        return 'no_active_agents' if not active_ids(s) else 'message_limit'
+    aid, decision = next(iter(decisions.items()))
+    budget = deepcopy(phase_budget(s))
+    budget.setdefault('opener', aid)
+    budget['last_speaker'] = aid
+    before = deepcopy(s['contracts']) if decision.contracts else None
+    receipts = []
+    for action in decision.contracts:
+        cid = apply_contract_action(s, aid, action)
+        receipts.append({'action': action.model_dump(), 'status': 'applied', 'contract_id': cid})
+
+    history = [m for m in s['messages'] if (m['round'], m['phase']) == (s['round'], s['phase'])]
+    published = []
+    if decision.message.strip() or receipts:
+        message = {'round': s['round'], 'phase': s['phase'], 'turn': s['turn'], 'sender': aid,
+                   'text': decision.message, 'contracts': decision.model_dump()['contracts'], 'contract_results': receipts}
+        s['messages'].append(message)
+        published.append(message)
+        emit(s, 'message', **message)
+        retain_public_history(s)
+        budget['messages_used'][aid] += 1
+        budget['passed_agents'] = []
+    else:
+        budget['passed_agents'].append(aid)
+
+    s['conversation_budget'] = budget
+    remaining = set(eligible_speakers(s))
+    progress = classify_public_pass(history, published)
+    changed = before is not None and before != s['contracts']
+    previous = current_progress(s)
+    seen = set(previous.get('cycle_seen', []))
+    stalled = previous['stalled_passes']
+    if progress['novel_agents'] or changed:
+        stalled, seen = 0, set()
+    else:
+        seen.add(aid)
+        if remaining <= seen:
+            stalled += 1
+            seen.clear()
+    s['conversation_progress'] = {'round': s['round'], 'phase': s['phase'], 'cycle_seen': sorted(seen),
+                                  'stalled_passes': stalled, **progress}
+    s['turn'] += 1
+    if not remaining:
+        return 'message_limit'
+    if remaining <= set(budget['passed_agents']):
+        return 'all_passed'
+    if stalled >= REPETITION_PASS_LIMIT:
+        return 'repetition'
+    return None
+
+
+def advance(s, decisions=None):
+    """Advance one public turn, private reflection step, or atomic game phase."""
     decisions = decisions or {}
     phase = s["phase"]
     if phase == 7 and not s["news_ready"]:
         publish_news(s)
         return
+    public = phase in (2, 7) and s['config']['communication']
+    if public and list(decisions) != speaker_order(s)[:1]:
+        raise ValueError("Provide exactly the current public speaker's decision.")
     for aid, d in decisions.items():
         validate_decision(s, aid, d)
     for aid, d in decisions.items():
         apply_memory(s, aid, d)
-    if phase in (2, 7):
-        outcomes = {aid: [] for aid in decisions}
-        actions = [(aid, action) for aid, d in decisions.items() for action in d.contracts]
-        # Every action was validated against the same pre-pass state above.
-        # A simultaneous rejection prevents an acceptance from activating that proposal.
-        actions.sort(key=lambda entry: entry[1].kind != "reject")
-        for aid, action in actions:
-            candidate = deepcopy(s)
-            try:
-                apply_contract_action(candidate, aid, action)
-            except ValueError:
-                result = {"action": action.model_dump(), "status": "not_applied",
-                          "reason": "The agreement changed during this simultaneous pass."}
-                emit(s, "contract_conflict", actor=aid, **result)
-            else:
-                s.update(candidate)
-                result = {"action": action.model_dump(), "status": "applied"}
-            outcomes[aid].append(result)
-        for aid, d in decisions.items():
-            if s["config"]["communication"] and not d.pass_turn:
-                message = {"round": s["round"], "phase": phase, "turn": s["turn"],
-                           "sender": aid, "text": d.message, "contracts": d.model_dump()["contracts"],
-                           "contract_results": outcomes[aid]}
-                s["messages"].append(message)
-                emit(s, "message", **message)
-        # Full messages already live in the append-only event ledger. Keep a bounded
-        # working window instead of rewriting the entire conversation each pass.
-        s["messages"] = s["messages"][-200:]
-        s["turn"] += 1
-        if s["turn"] < 10 and any(not d.pass_turn for d in decisions.values()):
+    if public:
+        reason = public_turn(s, decisions)
+        if reason is None:
+            return
+        budget = phase_budget(s)
+        ended = {'opener': budget.get('opener'), 'turns': s['turn'], 'reason': reason,
+                 'messages_used': deepcopy(budget['messages_used'])}
+        s['last_conversation_end'] = {'round': s['round'], 'phase': phase, **ended}
+        emit(s, 'conversation_ended', **ended)
+    elif phase in (2, 7):
+        budget = deepcopy(phase_budget(s))
+        quiet = all(d.pass_turn for d in decisions.values())
+        budget['quiet_passes'] = budget['quiet_passes'] + 1 if quiet else 0
+        s['conversation_budget'] = budget
+        s['turn'] += 1
+        if active_ids(s) and budget['quiet_passes'] < QUIET_PASS_LIMIT and s['turn'] < PRIVATE_REFLECTION_STEP_LIMIT:
             return
     elif phase == 3:
         for aid, d in decisions.items():
@@ -350,6 +432,7 @@ def advance(s, decisions=None):
         s["news_ready"] = False
         s["eliminated_this_round"] = []
         for a in s["agents"].values():
+            a.pop('planned_sowing', None)
             for k in ("request", "delivered", "sold", "lost", "fees", "revenue"):
                 a[k] = 0
             for k in ("used", "returned"):
@@ -357,4 +440,5 @@ def advance(s, decisions=None):
     else:
         s["phase"] += 1
     assert s["pond"] >= 0
-    assert all(a["bank"] - a["debt"] == 20000 + a["profit"] for a in s["agents"].values())
+    starting_cents = s["config"].get("starting_coins", 200) * 100
+    assert all(a["bank"] - a["debt"] == starting_cents + a["profit"] for a in s["agents"].values())

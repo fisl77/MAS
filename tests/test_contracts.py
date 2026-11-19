@@ -4,7 +4,7 @@ import pytest
 from farm.contracts import apply_contract_action, evaluate_contracts
 from farm.engine import new_game, advance
 from farm.schema import Config, ContractAction, Decision
-from farm.views import metrics
+from farm.views import metrics, observation
 
 
 def state():
@@ -55,6 +55,20 @@ def test_net_limit_is_not_request_limit():
     assert s["contract_results"][0]["type"]=="self"
 
 
+def test_signed_limit_does_not_block_delivery_or_add_breach_fees():
+    s=state();cid=propose(s);action(s,'B',kind='accept',contract_id=cid)
+    s['phase']=3
+    advance(s,{'A':Decision(request=250),'B':Decision(request=0),'C':Decision(request=0)})
+    a=s['agents']['A']
+    assert a['request']==250 and a['delivered']==250
+    advance(s,{'A':Decision(new_plants=[{'count':50,'water_per_plant':'5'}]),
+               'B':Decision(),'C':Decision()})
+    advance(s)  # Growth
+    advance(s)  # Returns and agreement evaluation
+    assert a['fees']==2000 and a['bank']==48000 and a['profit']==-2000
+    assert s['contract_results'][-1]['individual']['A']['status']=='breached'
+
+
 def test_cancellation_next_round_remaining_obligations_survive():
     s=state();cid=propose(s);action(s,"B",kind="accept",contract_id=cid)
     action(s,"A",kind="cancel",contract_id=cid)
@@ -95,34 +109,42 @@ def test_missing_agreement_is_not_zero_compliance():
     assert metrics(s)["agreement_rates"]["group"]["rate"] is None
 
 
-@pytest.mark.parametrize('order', [('A','B'), ('B','A')])
-def test_simultaneous_rejection_prevents_acceptance_without_blocking(order):
+def test_rejection_is_visible_before_next_speaker_decides():
     s=state();cid=propose(s)
-    decisions={
-        'A':Decision(pass_turn=False,contracts=[{'kind':'reject','contract_id':cid}]),
-        'B':Decision(pass_turn=False,contracts=[{'kind':'accept','contract_id':cid}])}
-    advance(s,{aid:decisions[aid] for aid in order})
-    assert s['turn']==1 and s['contracts'][0]['status']=='rejected'
-    assert len(s['messages'])==2
-    message=next(x for x in s['messages'] if x['sender']=='B')
-    assert message['contract_results'][0]['status']=='not_applied'
-    assert any(e['kind']=='contract_conflict' for e in s['events'])
+    reject=Decision(pass_turn=False,contracts=[{'kind':'reject','contract_id':cid}])
+    accept=Decision(pass_turn=False,contracts=[{'kind':'accept','contract_id':cid}])
+    with pytest.raises(ValueError, match='current public speaker'):
+        advance(s,{'A':reject,'B':accept})
+    assert s['turn']==0 and s['contracts'][0]['status']=='proposed'
+    advance(s,{'A':reject})
+    assert not observation(s,'B')['agreements']
+    with pytest.raises(ValueError, match='no longer open'):
+        advance(s,{'B':accept})
+    assert s['turn']==1 and len(s['messages'])==1
 
 
-def test_simultaneous_final_signatures_activate_same_proposal():
+def test_sequential_signatures_activate_same_proposal():
     s=state();cid=propose(s,participants=('A','B','C'))
-    advance(s,{aid:Decision(pass_turn=False,contracts=[{'kind':'accept','contract_id':cid}]) for aid in ('B','C')})
+    advance(s,{'A':Decision()})
+    for aid in ('B','C'):
+        advance(s,{aid:Decision(pass_turn=False,contracts=[{'kind':'accept','contract_id':cid}])})
     assert s['contracts'][0]['status']=='active'
     assert set(s['contracts'][0]['signatures'])=={'A','B','C'}
 
 
-def test_ten_passes_and_early_silence_for_both_conditions():
+def test_private_steps_and_public_turns_have_separate_budgets():
     for communication in (False,True):
-        s=state();s["config"]["communication"]=communication
-        for i in range(10):
-            assert s["phase"]==2 and s["turn"]==i
-            advance(s,{a:Decision(pass_turn=False,message="Still discussing" if communication else "",memory="Private note") for a in s["agents"]})
-        assert s["phase"]==3 and len(s["messages"])==(30 if communication else 0)
-        assert all(x["text"]!="Private note" for x in s["messages"])
-        s=state();advance(s,{a:Decision() for a in s["agents"]})
-        assert s["phase"]==3
+        s=state();s['config']['communication']=communication
+        for i in range(30 if communication else 10):
+            assert s['phase']==2 and s['turn']==i
+            actors = ['ABC'[i%3]] if communication else list(s['agents'])
+            advance(s,{a:Decision(pass_turn=False,message=f'I propose a cap of {100+i} liters.' if communication else '',
+                                  memory='Private note') for a in actors})
+        assert s['phase']==3 and len(s['messages'])==(30 if communication else 0)
+        assert all(x['text']!='Private note' for x in s['messages'])
+        s=state();s['config']['communication']=communication
+        actors = [['A'], ['B'], ['C']] if communication else [list(s['agents'])]*2
+        for group in actors:
+            assert s['phase']==2
+            advance(s,{a:Decision() for a in group})
+        assert s['phase']==3

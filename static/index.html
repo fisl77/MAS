@@ -18,7 +18,7 @@
       <button class="nav" data-tab="experiments"><span>⌁</span> Experiments</button>
       <button class="nav" data-tab="events"><span>≡</span> Event ledger</button>
     </nav>
-    <div class="sidebar-bottom"><span class="local-dot"></span> LOCAL ENVIRONMENT<p>Independent farms.<br>One shared resource.</p><small>Rules v1.0 · Researcher view</small></div>
+    <div class="sidebar-bottom"><span class="local-dot"></span> LOCAL ENVIRONMENT<p>Independent farms.<br>One shared resource.</p><small>Rules v1.5 · Researcher view</small></div>
   </aside>
   <main>
     <header class="topbar"><div><span class="eyebrow">MULTI-AGENT RESOURCE STUDY</span><h1 id="page-title">The common ground.</h1></div><button class="primary" id="new-game">＋ New game</button></header>
@@ -31,6 +31,11 @@
     <div id="content"></div>
     <footer><span>Every decision leaves a trace.</span><span>Local processing · Exact accounting · Private agent memories</span></footer>
   </main>
+  <dialog id="note-journal" aria-labelledby="note-journal-title">
+    <div class="dialog-head"><h2 id="note-journal-title">Private note history</h2><form method="dialog"><button class="icon" aria-label="Close history">×</button></form></div>
+    <div id="note-changes"></div>
+    <button id="more-notes" hidden>Earlier changes</button>
+  </dialog>
   <dialog id="setup">
     <form id="setup-form">
       <div class="dialog-head"><div><span class="eyebrow">DESIGN A RUN</span><h2>A new common ground.</h2></div><button type="button" class="icon" id="close-setup" aria-label="Close setup">×</button></div>
@@ -38,6 +43,7 @@
       <div class="form-grid">
         <label>Controller<select name="controller"><option value="test">Scripted test agents</option><option value="ollama">Autonomous Ollama agents</option></select></label>
         <label>Population<select name="agent_count"><option value="2">2 farms</option><option value="3">3 farms</option><option value="4">4 farms</option><option value="5">5 farms</option></select></label>
+        <label>Starting coins per farm<input type="number" name="starting_coins" min="1" step="1" value="500" required></label>
         <label>Run type<select name="test_mode"><option value="true">Technical pilot</option><option value="false">Regular research · 1,000 rounds</option></select></label>
         <label>Rounds<input type="number" name="rounds" min="1" max="1000" value="20" required></label>
         <label>Weather seed<input type="number" name="seed" value="42" required></label>
@@ -46,16 +52,17 @@
         <label id="scenario-field">Test scenario<select name="scenario"><option value="balanced">Balanced irrigation</option><option value="scarcity">Water scarcity</option><option value="returns">Unused-water return</option><option value="insolvency">Fee insolvency</option></select></label>
       </div>
       <div id="profiles" class="form-grid"></div>
-      <div id="model-fields" hidden><label>Installed model<select name="model" id="model-select"><option value="llama3.2:3b">llama3.2:3b</option></select></label><div class="model-note"><span id="model-status" class="subtle"></span><button type="button" id="refresh-models">Refresh models</button></div></div>
+      <p class="subtle">Profiles guide autonomous Ollama agents. Scripted test agents follow fixed technical scenarios.</p>
+      <div id="model-fields" hidden><label>Installed model<select name="model" id="model-select"><option value="llama3.1:8b">llama3.1:8b</option></select></label><div class="model-note"><span id="model-status" class="subtle"></span><button type="button" id="refresh-models">Refresh models</button></div></div>
       <details><summary>Advanced settings</summary><div class="form-grid">
-        <label>Temperature<input name="temperature" type="number" min="0" max="2" step="0.1" value="0"></label>
+        <label>Temperature<input name="temperature" type="number" min="0" max="2" step="0.1" value="0"><span class="subtle">Lower values give more repeatable answers. Higher values increase variation and can increase errors.</span></label>
         <label>Context tokens<input name="context_tokens" type="number" min="4096" max="131072" value="16384"></label>
         <label>Output tokens<input name="output_tokens" type="number" min="256" max="8192" value="2048"></label>
         <label>Request timeout (seconds)<input name="timeout_seconds" type="number" min="10" max="1800" value="180"></label>
         <label class="full">Local export directory<input name="output_directory" value="data/exports" required></label>
       </div></details>
       <div class="form-error" id="setup-error" role="alert"></div>
-      <div class="dialog-footer"><small>Conversations are voluntary, with up to 10 contributions per agent per conversation phase.</small><button class="primary" type="submit">Create game →</button></div>
+      <div class="dialog-footer"><small>Each farm has 10 public contributions per conversation phase. Passing is free. Farms speak in turn. Consecutive passes by all eligible farms, two full cycles without progress, or exhausted budgets end the phase.</small><button class="primary" type="submit">Create game →</button></div>
     </form>
   </dialog>
   <script type="module" src="/static/app.js"></script>

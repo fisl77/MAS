@@ -4,6 +4,7 @@ import random
 import pytest
 
 from farm.agents import scripted
+from farm.conversation import speaker_order
 from farm.engine import (new_game, allocation, plant_change, grow, deliver, settle,
                          publish_news, finish, advance, active_ids, validate_decision)
 from farm.schema import Config, Decision, water
@@ -13,6 +14,16 @@ from farm.views import observation, metrics
 
 def game(**kwargs):
     return new_game(Config(**kwargs))
+
+
+def test_default_and_configurable_starting_capital():
+    assert Config().starting_coins == 500
+    for coins in (1, 200, 500, 725):
+        s=game(starting_coins=coins)
+        assert all(a['bank']==coins*100 and a['profit']==0 and a['debt']==0
+                   for a in s['agents'].values())
+    for invalid in (0, -1, 1.5, True, '500'):
+        with pytest.raises(ValueError):Config(starting_coins=invalid)
 
 
 @pytest.mark.parametrize("amount,expected", [
@@ -38,7 +49,7 @@ def test_death_before_sale_and_current_quality():
     grow(s)
     assert a["plants"] == []
     assert a["lost"] == 2 and a["sold"] == 2
-    assert a["profit"] == 2400 and a["bank"] == 22400
+    assert a["profit"] == 2400 and a["bank"] == 52400
 
 
 @pytest.mark.parametrize("requests,pond,expected", [
@@ -78,7 +89,7 @@ def test_start_rotation_independent_of_requests_and_skips_eliminated():
 def test_insolvent_delivery_reallocated_without_payment():
     s=game();s["pond"]=F(5)
     a,b=s["agents"].values()
-    a.update(bank=1900,profit=-18100,request=10)
+    a.update(bank=1900,profit=-48100,request=10)
     b["request"]=10
     deliver(s)
     assert not a["active"] and a["delivered"]==0 and a["fees"]==0
@@ -86,7 +97,7 @@ def test_insolvent_delivery_reallocated_without_payment():
 
 
 def test_zero_balance_without_obligation_is_active():
-    s=game();a=s["agents"]["A"];a.update(bank=0,profit=-20000,request=0)
+    s=game();a=s["agents"]["A"];a.update(bank=0,profit=-50000,request=0)
     deliver(s)
     assert a["active"]
     a["request"]=1;deliver(s)
@@ -94,22 +105,22 @@ def test_zero_balance_without_obligation_is_active():
 
 
 def test_delivery_paid_before_harvest_and_exact_zero_allowed():
-    s=game();a=s["agents"]["A"];a.update(bank=2000,profit=-18000,request=100)
+    s=game();a=s["agents"]["A"];a.update(bank=2000,profit=-48000,request=100)
     deliver(s)
     assert a["active"] and a["bank"]==0 and a["fees"]==2000
 
 
 def test_return_debt_never_loses_water_or_full_expense():
     s=game();a=s["agents"]["A"]
-    a.update(bank=1000,profit=-19000,delivered=10,used=F(3))
+    a.update(bank=1000,profit=-49000,delivered=10,used=F(3))
     s["pond"]=F(4990)
     settle(s)
     assert s["pond"]==4997 and a["returned"]==7
-    assert a["bank"]==0 and a["debt"]==3000 and a["profit"]==-23000
+    assert a["bank"]==0 and a["debt"]==3000 and a["profit"]==-53000
     assert not a["active"]
     publish_news(s)
     assert s["news"]["announcements"]==["Agent A has been eliminated."]
-    assert "A" not in s["news"]["net_withdrawals"] and s["news"]["bank_ranking"]==[20000]
+    assert "A" not in s["news"]["net_withdrawals"] and s["news"]["bank_ranking"]==[50000]
 
 
 def test_no_return_fee_on_exact_use_and_rain_after_returns():
@@ -166,12 +177,14 @@ def test_winner_eligibility_ties_and_all_eliminated():
 
 @pytest.mark.parametrize("count",[2,5])
 @pytest.mark.parametrize("communication",[False,True])
-def test_complete_games_water_accounts_and_round_trip(count,communication):
-    s=game(agent_count=count,rounds=35,communication=communication)
+@pytest.mark.parametrize("starting_coins",[200,500,725])
+def test_complete_games_water_accounts_and_round_trip(count,communication,starting_coins):
+    s=game(agent_count=count,rounds=35,communication=communication,starting_coins=starting_coins)
     forecasts={x["round"]:x["weather"] for x in s["news"]["forecast"]}
     before=F(5000)
     while s["status"]!="completed":
-        decisions={a:scripted(s,a) for a in active_ids(s)} if s["phase"] in (1,2,3,4) or s["phase"]==7 and s["news_ready"] else {}
+        actors = speaker_order(s)[:1] if communication and s["phase"] in (2,7) else active_ids(s)
+        decisions={a:scripted(s,a) for a in actors} if s["phase"] in (1,2,3,4) or s["phase"]==7 and s["news_ready"] else {}
         phase=s["phase"]
         advance(s,decisions)
         if phase==6:
@@ -181,7 +194,7 @@ def test_complete_games_water_accounts_and_round_trip(count,communication):
             before=h["pond"]
         if s["news_ready"]:
             forecasts.update({x["round"]:x["weather"] for x in s["news"]["forecast"]})
-        assert all(a["bank"]-a["debt"]==20000+a["profit"] for a in s["agents"].values())
+        assert all(a["bank"]-a["debt"]==starting_coins*100+a["profit"] for a in s["agents"].values())
         s["events"]=[]
         s=loads(dumps(s))
     assert len(s["history"])==35
@@ -238,12 +251,34 @@ def test_resource_minimum_includes_delivery_trough_before_rain():
 
 
 def test_observations_do_not_leak_elimination_before_public_news():
-    s=game();s['agents']['A'].update(bank=0,profit=-20000,request=1)
+    s=game(communication=True);s['agents']['A'].update(bank=0,profit=-50000,request=1)
     deliver(s)
     assert not s['agents']['A']['active']
     assert observation(s,'B')['active_agents']==['A','B']
+    assert observation(s,'B')['conversation_status']['known_eliminated_agents']==[]
     publish_news(s)
     assert observation(s,'B')['active_agents']==['B']
+    s['phase']=7
+    status=observation(s,'B')['conversation_status']
+    assert status['known_eliminated_agents']==['A'] and status['eligible_agents']==['B']
+    assert not status['can_receive_reply_before_phase_end']
+
+
+def test_passing_does_not_remove_reply_eligibility_and_all_pass_closes_phase():
+    s=game(communication=True);s['phase']=2
+    advance(s,{'A':Decision(pass_turn=False,message='B, can you reply?')})
+    status=observation(s,'A')['conversation_status']
+    assert status['phase_open'] and status['pass_number']==2
+    assert status['eligible_agents']==['B','A']
+    assert not status['passing_is_permanent']
+    assert status['can_receive_reply_before_phase_end'] and status['messages_remaining']=={'A':9,'B':10}
+    advance(s,{'B':Decision()})
+    status=observation(s,'A')['conversation_status']
+    assert s['phase']==2 and status['consecutive_passes']==1
+    advance(s,{'A':Decision()})
+    status=observation(s,'A')['conversation_status']
+    assert s['phase']==3 and not status['phase_open']
+    assert status['eligible_agents']==[] and not status['can_receive_reply_before_phase_end']
 
 
 def test_plant_ids_do_not_reveal_other_farms_activity():
