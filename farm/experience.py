@@ -61,6 +61,8 @@ def _archive_rows(state, events):
                 if not any(a[k] for k in ('request', 'fees', 'revenue', 'lost')):
                     continue
                 row = {k: a[k] for k in ('request', 'delivered', 'sold', 'lost', 'fees', 'revenue')}
+                if 'delivery_fee' in a:
+                    row.update(delivery_fee=a['delivery_fee'], return_fee=a['return_fee'], net_balance=a['bank']-a['debt'])
                 row.update(kind='accounts', round=r, used=liters_text(a['used']),
                            returned=liters_text(a['returned']), profit_change=a['revenue']-a['fees'])
                 yield aid, '', [], row

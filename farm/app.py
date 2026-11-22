@@ -16,8 +16,10 @@ from pydantic import Field
 
 from .agents import list_models
 from .engine import new_game, PHASES
+from .knowledge import agent_knowledge
+from .learning import model_money
 from .runner import Runner
-from .schema import Config, Strict, PROMPT_VERSION, RULE_VERSION
+from .schema import Config, EconomySettings, Strict, PROMPT_VERSION, RULE_VERSION
 from .store import Store, display, dumps
 from .views import metrics, observation, conversation_status
 
@@ -75,7 +77,8 @@ def create_app(database=None):
 
     @app.get("/api/health")
     def health():
-        return {"ok": True, "busy": runner.busy, "current_run": runner.current, "progress": runner.progress}
+        return {"ok": True, "busy": runner.busy, "current_run": runner.current, "progress": runner.progress,
+                "prompt_version": PROMPT_VERSION, "source_sha256": implementation_hash}
 
     @app.get("/api/models")
     async def models():
@@ -92,12 +95,18 @@ def create_app(database=None):
     def create_run(config: Config):
         return {"id": create(config)}
 
+    @app.post("/api/knowledge/preview")
+    def preview_knowledge(config: EconomySettings):
+        return agent_knowledge(config.model_dump())
+
     @app.get("/api/runs/{rid}")
     def get_run(rid: str):
         s = store.load(rid)
-        return display({"id": rid, "state": s, "metrics": metrics(s), "phase_name": PHASES[s["phase"]],
+        return display({"id": rid, "state": s, "metrics": metrics(s),
+            "phase_name": "NEWS · Private round review" if s.get('review_pending') else PHASES[s["phase"]],
             "execution": store.call_stats(rid),
-            "conversation": conversation_status(s) if s["rule_version"] == RULE_VERSION else None,
+            "game_rules": agent_knowledge(s["config"]) if "harvest_quality" in s["config"] else None,
+            "conversation": conversation_status(s) if s["rule_version"] in (RULE_VERSION, "farm-1.6") else None,
             "progress": runner.progress if runner.current == rid else None})
 
     @app.post("/api/runs/{rid}/{command}")
@@ -138,11 +147,10 @@ def create_app(database=None):
         s = store.load(rid)
         if aid not in s["agents"]:
             raise HTTPException(404, "Agent not found.")
-        if s.get("prompt_version") != PROMPT_VERSION:
-            saved = store.last_observation(rid, aid)
-            if saved is not None:
-                return display(saved)
-        return display(observation(s, aid, store=store, rid=rid))
+        version = s.get("prompt_version")
+        saved = store.last_observation(rid, aid) if version != PROMPT_VERSION else None
+        allowed = display(saved if saved is not None else observation(s, aid, store=store, rid=rid))
+        return model_money(allowed) if version in ('farm-agent-1.25', PROMPT_VERSION) else allowed
 
     @app.get("/api/runs/{rid}/agents/{aid}/notes")
     def private_note_history(rid: str, aid: str, before: int | None = None):
@@ -157,8 +165,11 @@ def create_app(database=None):
     def csv_export(rid):
         s = store.load(rid)
         out = io.StringIO()
-        fields = ["run_id", "technical_test", "controller", "model", "communication", "seed", "starting_coins", "round", "agent", "profile", "pond_exact", "weather",
-                  "profit", "bank", "debt", "request", "delivered", "returned", "used", "sold", "lost", "fees", "revenue", "active"]
+        economy = EconomySettings().model_dump()
+        economy.update({key: s["config"][key] for key in economy if key in s["config"]})
+        fields = ["run_id", "technical_test", "controller", "model", "communication", "seed", "starting_coins", "rule_version", *economy,
+                  "round", "agent", "profile", "pond_exact", "weather", "profit", "bank", "debt", "net_balance",
+                  "request", "delivered", "returned", "used", "sold", "lost", "fees", "delivery_fee", "return_fee", "revenue", "active"]
         writer = csv.DictWriter(out, fieldnames=fields)
         writer.writeheader()
         for row in s["history"]:
@@ -167,6 +178,7 @@ def create_app(database=None):
                     "controller": s["config"]["controller"], "model": s["config"]["model"] if s["config"]["controller"] == "ollama" else "scripted",
                     "communication": s["config"]["communication"], "seed": s["config"]["seed"],
                     "starting_coins": s["config"].get("starting_coins", 200),
+                    "rule_version": s["rule_version"], **economy, "net_balance": data["bank"] - data["debt"],
                     "round": row["round"], "agent": aid, "profile": s["agents"][aid]["profile"],
                     "pond_exact": str(row["pond"]), "weather": row["weather"], **data})
         return out.getvalue()
@@ -273,6 +285,7 @@ def create_app(database=None):
         # A changed asset URL also refreshes tabs whose browser cached an older module.
         version = implementation_hash[:16]
         html = (ROOT / "static/index.html").read_text(encoding="utf-8")
+        html = html.replace('data-rule-version=""', f'data-rule-version="{RULE_VERSION}"')
         for asset in ("app.js", "style.css"):
             html = html.replace(f'"/static/{asset}"', f'"/static/{asset}?v={version}"')
         return HTMLResponse(html, headers={"Cache-Control": "no-store"})

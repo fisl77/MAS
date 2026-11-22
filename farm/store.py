@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from fractions import Fraction
 from pathlib import Path
 import json
+import re
 import sqlite3
 import time
 import uuid
@@ -166,10 +167,33 @@ class Store:
     def note_history(self, rid, aid, before=None):
         with self.connection() as db:
             rows = db.execute("SELECT id,body FROM events WHERE run_id=? AND id<? "
-                              "AND json_extract(body,'$.kind')='note_changed' AND json_extract(body,'$.agent_id')=? "
+                              "AND json_extract(body,'$.kind') IN ('note_changed','round_review') AND json_extract(body,'$.agent_id')=? "
                               "ORDER BY id DESC LIMIT 51", (rid, before or 2**63-1, aid)).fetchall()
         return {'changes': [dict(id=k, **loads(b)) for k,b in rows[:50]],
                 'before': rows[49][0] if len(rows) > 50 else None}
+
+    def recall_reviews(self, rid, aid, query):
+        """Search this run and owner only, including superseded and retired versions."""
+        terms = re.findall(r'[\w]+(?::\d+)?', query.casefold())
+        if not set(terms) & {'archive', 'review', 'lesson', 'note', 'question'} and not any(':' in t for t in terms):
+            return []
+        rounds = re.findall(r'\bround\s+(\d+)', query, re.I)
+        words = [t for t in terms if t not in {'archive','review','round','my','find','about','the','old'} and t not in rounds]
+        with self.connection() as db:
+            rows = db.execute("SELECT body FROM events WHERE run_id=? AND json_extract(body,'$.agent_id')=? "
+                              "AND json_extract(body,'$.kind')='round_review' ORDER BY id DESC", (rid, aid))
+            found = []
+            for (raw,) in rows:
+                item = loads(raw)
+                if rounds and str(item['round']) not in rounds:
+                    continue
+                if not all(word in raw.casefold() for word in words):
+                    continue
+                found.append({k: item[k] for k in ('round','choice','conclusion','evidence','changes','money_unit',
+                                                   'measurement_conflicts') if k in item})
+                if len(found) == 2:
+                    break
+            return found
 
     def last_observation(self, rid, aid):
         with self.connection() as db:

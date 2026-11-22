@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from farm.agents import prompt_messages
+from farm.agents import prompt_messages, scripted
 from farm.app import create_app
 from farm.conversation import retain_public_history
 from farm.engine import advance, new_game
@@ -37,6 +37,8 @@ def test_archive_retrieval_through_worker_preserves_measured_changes_and_owner(t
         return [{'name': 'fixture', 'digest': 'fixed'}]
     async def decide(s, aid, obs, _store, _rid, key):
         seen[key] = obs
+        if s.get('review_pending'):
+            return scripted(s, aid)
         r, phase = s['round'], s['phase']
         if phase == 1 and r == 3:
             return Decision(recall_query='round 1 dose 3.125')
@@ -152,3 +154,17 @@ def test_older_games_show_the_original_saved_observation(tmp_path):
     with TestClient(app) as client:
         assert client.get(f'/api/runs/{rid}/agents/A').json() == old
         assert client.get(f'/api/runs/{rid}/download/json').json()['observations'][0]['observation'] == old
+
+
+def test_previous_coin_version_keeps_its_saved_figures_in_coins(tmp_path):
+    app = create_app(tmp_path/'previous.sqlite3')
+    store = app.state.store
+    s = new_game(Config())
+    s['prompt_version'] = 'farm-agent-1.25'
+    rid = store.create(s)
+    saved = {'round': 7, 'own_farm': {'bank': 22000, 'return_fee': 4000}}
+    store.accept(rid, '7:7:1:A', 'A', Decision().model_dump(), saved)
+    with TestClient(app) as client:
+        assert client.get(f'/api/runs/{rid}/agents/A').json() == {
+            'round': 7, 'own_farm': {'bank': 220, 'return_fee': 40}}
+        assert client.get(f'/api/runs/{rid}/download/json').json()['observations'][0]['observation'] == saved

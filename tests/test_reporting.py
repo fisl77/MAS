@@ -7,6 +7,7 @@ import pytest
 
 from farm.agents import model_decision, model_format
 from farm.engine import advance, new_game
+from farm.knowledge import fee_report
 from farm.reporting import REPORT_TOKEN, describes_trial, grounded_text, trial_report
 from farm.schema import Config, Decision
 from farm.store import Store, dumps
@@ -23,6 +24,11 @@ PROFILES = ['short_term', 'reciprocal', 'cunning_experimenter']
     'Farm C claims 4 L worked, and I also tested it on my plants.',
     'Why did my 50 seedlings die at 4 L?', 'My plants are thriving at 2 L.',
     'At 4 L: 100% survival.', 'In one trial, a 20-coin delivery led to a 10% increase in growth.',
+    "I've reviewed my experiment plan and found that the comparison settled the effectiveness "
+    "of watering my plants with 3.7 L each.",
+    'The comparison confirmed that 3.7 L per seedling was effective.',
+    '3.7 L each was effective in my experiment.',
+    'The experiment at 3.7 L confirmed the best dose for my plants.',
 ])
 def test_unsupported_trial_stories(text):
     assert describes_trial(text)
@@ -33,6 +39,8 @@ def test_unsupported_trial_stories(text):
     'Did your seedlings survive?', 'My plan is to compare two doses tomorrow.',
     'I have not yet tested 1.5 L.', 'I will keep enough coins for delivery.',
     'I have no measured plant results yet.',
+    'Did your comparison establish whether 3.7 L per plant is useful?',
+    'I plan to compare 1.7 L and 2.0 L per plant.',
 ])
 def test_free_discussion_and_hypotheses(text):
     assert not describes_trial(text)
@@ -112,6 +120,80 @@ def test_revision_can_attribute_a_peer_and_request_evidence(tmp_path):
     assert [c['trial_report_review'] for c in store.calls(rid)] == [['message'], []]
 
 
+def test_a_repeated_false_premise_and_trial_never_reach_the_next_farm(tmp_path):
+    s = game()
+    store = Store(tmp_path/'claims.db')
+    rid = store.create(s)
+    draft = {'pass_turn': False, 'message': "My comparison settled the effectiveness of 3.7 L per plant. "
+             "Can you elaborate on the recent delivery fee increase?",
+             'memory': {'open_question': 'Does a second trial confirm this?'},
+             'contracts': [{'kind': 'propose', 'start_round': 1, 'end_round': 2,
+                            'limits': {'A': {'max_request': 6}, 'B': {'max_request': 6}}}]}
+    d = decide(s, 'A', store, rid, [draft, draft])
+    advance(s, {'A': d})
+    store.save(rid, s)
+    saved = store.load(rid)
+    assert len(store.calls(rid)) == 2
+    assert all(c['fee_claim_review'] and 'message' in c['trial_report_review'] for c in store.calls(rid))
+    peer = observation(saved, 'B', store=store, rid=rid)
+    assert peer['messages'][0]['text'] == '' and peer['agreements'][0]['signatures'] == ['A']
+    assert '3.7' not in dumps(peer) and saved['agents']['A']['memory']['open_question']
+
+
+def test_echo_becomes_a_free_pass_but_an_actual_signature_still_reaches_peers(tmp_path):
+    s = game()
+    store = Store(tmp_path/'echo.db')
+    rid = store.create(s)
+    text = "Can you share any insights or results from your experiment?"
+    proposal = {'kind': 'propose', 'start_round': 1, 'end_round': 2,
+                'limits': [{'agent_id': a, 'max_request': 6} for a in 'AB']}
+    advance(s, {'A': Decision(pass_turn=False, message=text, contracts=[proposal])})
+    accept = {'pass_turn': False, 'message': text, 'contracts': [{'kind':'accept','contract_id':'c1'}]}
+    advance(s, {'B': decide(s, 'B', store, rid, [accept])})
+    echo = {'pass_turn': False, 'message': text, 'memory': {'insight': 'Ask about one specific dose.'}}
+    advance(s, {'C': decide(s, 'C', store, rid, [echo])})
+    assert [m['text'] for m in s['messages']] == [text, '']
+    assert s['contracts'][0]['status'] == 'active'
+    assert s['conversation_budget']['messages_used'] == {'A':1, 'B':1, 'C':0}
+    assert s['agents']['C']['memory']['insight'] == echo['memory']['insight']
+    s.update(round=2, phase=2, turn=0)
+    assert decide(s, 'B', store, rid, [echo]).pass_turn
+    fresh = {'pass_turn': False, 'message': 'Farm C, what happened at 1.7 L this round?'}
+    assert decide(s, 'B', store, rid, [fresh]).message == fresh['message']
+
+
+def test_official_contract_caps_cannot_be_presented_as_a_fee_cap_or_irrigation_dose(tmp_path):
+    s = game()
+    store = Store(tmp_path/'scope.db')
+    rid = store.create(s)
+    false_terms = {'pass_turn': False, 'message': 'The contract will cap our delivery fees at 20 coins per farm. '
+                   'It will limit our water usage to 2.5 L per plant.'}
+    assert decide(s, 'A', store, rid, [false_terms, false_terms]).pass_turn
+    assert all(c['agreement_scope_review'] for c in store.calls(rid))
+    honest = {'pass_turn': False, 'message': 'The proposed contract limits requests to 10 L per farm. '
+              'I will limit watering to 2.5 L per plant.'}
+    assert decide(s, 'A', store, rid, [false_terms, honest]).message == honest['message']
+    mixed = {'pass_turn': False, 'message': "The proposal is to limit the delivery fee to 10 coins per farm, "
+             "not to cap the water usage or fees."}
+    assert decide(s, 'A', store, rid, [mixed, mixed]).pass_turn
+    assert store.calls(rid)[-1]['fee_claim_review'] and store.calls(rid)[-1]['agreement_scope_review']
+
+
+def test_delivery_rules_and_verbal_passes_on_public_turns(tmp_path):
+    s = game()
+    store = Store(tmp_path/'public-water.db')
+    rid = store.create(s)
+    draft = {'pass_turn': False, 'message': "I'd like to order 2.5 L to account for water loss during transport."}
+    assert decide(s, 'A', store, rid, [draft, draft]).pass_turn
+    assert store.calls(rid)[-1]['water_rule_review']
+    treatment = {'pass_turn': False, 'message': 'I will request 5 L and try 2.5 L per seedling.'}
+    assert decide(s, 'A', store, rid, [treatment]).message == treatment['message']
+    spoken = {'pass_turn': False, 'message': "I'm considering the latest question from Farm B, but I don't have "
+              "any new information to share. I'll pass for now."}
+    assert decide(s, 'A', store, rid, [spoken]).pass_turn
+    assert store.calls(rid)[-1]['spoken_pass']
+
+
 def test_real_result_rendered_only_for_its_owner(tmp_path):
     s = game(phase=4)
     s['agents']['A']['delivered'] = 3
@@ -130,6 +212,48 @@ def test_real_result_rendered_only_for_its_owner(tmp_path):
     obs = observation(s, 'A')
     obs['own_farm']['recent_plant_results'] = []
     assert 'no matching' in trial_report(s['agents']['A'], obs)
+
+
+def test_public_fee_reference_quotes_active_settings_and_combines_with_an_owner_record(tmp_path):
+    s = game()
+    s['config'].update(delivery_fee_coins=7, return_fee_enabled=False)
+    store = Store(tmp_path/'fees.db')
+    rid = store.create(s)
+    tariffs = fee_report(s['config'])
+    assert '7 coins for a positive delivery and 0 coins for a positive return' in tariffs
+    draft = {'pass_turn': False, 'message': '[[fees]]. [[trial]]'}
+    d = decide(s, 'A', store, rid, [draft])
+    assert d.message == tariffs + ' I have no measured plant results yet.'
+    invalid = {'pass_turn': False, 'message': 'It is false that [[fees]]'}
+    assert decide(s, 'A', store, rid, [invalid, invalid]).pass_turn
+
+
+def test_farm_can_answer_with_its_own_settled_water_instead_of_repeating_the_question(tmp_path):
+    s = game(phase=3)
+    store = Store(tmp_path/'water.db')
+    rid = store.create(s)
+    advance(s, {a: Decision(request=3 if a=='A' else 0) for a in s['agents']})
+    advance(s, {'A': Decision(new_plants=[{'count': 1, 'water_per_plant': '1.7'}])})
+    advance(s)
+    advance(s)
+    advance(s)
+    advance(s, {'B': Decision(pass_turn=False, message='Farm A, what were the results of your experiment?')})
+    store.save(rid, s)
+    owner = observation(s, 'A', store=store, rid=rid)['recalled_experiences'][0]
+    assert owner['kind'] == 'plant' and owner['water_per_plant'] == '1.7'
+    drafts = [{'pass_turn': False, 'message': '[[water]]'}]
+    assert decide(s, 'A', store, rid, drafts).message == (
+        'In round 1 I received 3 L, used 1.7 L and returned 1.3 L. '
+        'I paid 20 coins for delivery and 40 coins for returns.')
+    assert 'received 0 L' in decide(s, 'B', store, rid, drafts).message
+    mixed = {'pass_turn': False, 'message': "I plan to use 2 L, which is less than the 3 L I received and used last round."}
+    corrected = decide(s, 'A', store, rid, [mixed, {'pass_turn': False, 'message': 'I plan to use 2 L. [[water]]'}])
+    assert corrected.message.startswith('I plan to use 2 L. In round 1 I received 3 L, used 1.7 L')
+    assert decide(s, 'B', store, rid, [mixed, mixed]).pass_turn
+    stock = {'pass_turn': False, 'message': 'I have 10 L of water available, so I can meet my needs.'}
+    assert decide(s, 'A', store, rid, [stock, stock]).pass_turn
+    conditional = {'pass_turn': False, 'message': 'If I have 10 L available after my next delivery, I will test 2 L per plant.'}
+    assert decide(s, 'A', store, rid, [conditional]).message == conditional['message']
 
 
 def test_all_profiles_make_distinct_private_choices(tmp_path):

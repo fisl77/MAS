@@ -11,6 +11,8 @@ const profileDescriptions = {
 };
 // Runs recorded before configurable capital started with 200 coins.
 const startingCoins = s => s.config.starting_coins ?? 200;
+// Older local servers can serve these same static files while finishing their recorded games.
+const serverRuleVersion = document.documentElement.dataset.ruleVersion;
 let current = localStorage.getItem('water-lab-run') || '', tab='overview', data=null, agent='A', events=[], cursor=0, polling=false;
 let experimentsCache = null, experimentResults = null;
 const titles = {overview:'The common ground.',agents:'Inside the farm.',conversation:'A space to negotiate.',agreements:'Promises, measured.',experiments:'Compare the conditions.',events:'Every action, accounted for.'};
@@ -34,6 +36,10 @@ function badge(text, cls='') { return `<span class="badge ${cls}">${escape(text)
 function empty(text, icon='◇') { return `<div class="empty-state"><span class="large-icon">${icon}</span>${escape(text)}</div>`; }
 function table(headers, rows) { return `<div class="table-wrap"><table><thead><tr>${headers.map(x=>`<th>${escape(x)}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`; }
 function row(cells) { return `<tr>${cells.map(c=>`<td>${c}</td>`).join('')}</tr>`; }
+function knowledgeList(rules) {
+  return '<dl class="rule-list">' + Object.entries(rules).map(([topic,rule]) =>
+    `<dt>${escape(topic)}</dt><dd>${escape(rule)}</dd>`).join('') + '</dl>';
+}
 function metric(label,value,unit,note,feature=false) { return `<div class="metric ${feature?'feature':''}"><div class="label">${label}<span>${feature?'◒':'↗'}</span></div><div class="value">${value} <small>${unit}</small></div><div class="note">${note}</div></div>`; }
 function chart(history, field='pond', currency=false) {
   if (!history.length) return '<div class="empty-chart">The resource story starts with the first round.</div>';
@@ -47,13 +53,26 @@ function chart(history, field='pond', currency=false) {
 }
 function meta(s) { return `<div class="meta-line">${badge(s.config.test_mode?'TECHNICAL TEST':'REGULAR RESEARCH',s.config.test_mode?'test':'')}<span>${s.config.controller==='test'?'Scripted agents · Not LLM results':escape(s.config.model)}</span><span>·</span><span>${s.config.agent_count} farms</span><span>·</span><span>Communication ${s.config.communication?'on':'off'}</span><span>·</span><span>Weather seed ${s.config.seed}</span><span>·</span><span>${number(startingCoins(s))} starting coins / farm</span></div>`; }
 function weather(s) { return `<div class="weather-strip">${s.news.forecast.map(d=>`<div class="weather-day ${d.weather==='rain'?'rain':''}"><span class="weather-date">R${d.round}</span><span class="weather-icon">${d.weather==='rain'?'☂':'☀'}</span>${d.weather==='rain'?'Rain':'Dry'}</div>`).join('')}</div>`; }
-function farms(s) { return Object.entries(s.agents).map(([id,a],i)=>`<article class="farm-card" style="--farm-color:${colors[i]}"><div class="farm-title"><span class="avatar">${id}</span><div><h3>Farm ${id}</h3><small>${escape(profileLabels[a.profile]||a.profile)}</small></div>${badge(a.active?'ACTIVE':'ELIMINATED',a.active?'':'breached')}</div><div class="farm-stats"><div><strong>${coins(a.bank)}</strong><small>Bank · coins</small></div><div><strong>${coins(a.profit)}</strong><small>Net profit · coins</small></div><div><strong>${number(a.plants.reduce((n,g)=>n+g.count,0))}</strong><small>Living plants</small></div></div><div class="water-bar"><div class="bar-label"><span>Delivered / requested</span><span>${number(a.delivered)} / ${number(a.request)} L</span></div><div class="bar"><div style="width:${a.request?100*a.delivered/a.request:0}%"></div></div></div><div class="farm-bottom"><span>${number(a.used,3)} L used · ${number(a.returned,3)} L returned</span><button class="text-button" data-agent="${id}">Inspect farm ↗</button></div></article>`).join(''); }
+function farms(s) { return Object.entries(s.agents).map(([id,a],i)=>`<article class="farm-card" style="--farm-color:${colors[i]}"><div class="farm-title"><span class="avatar">${id}</span><div><h3>Farm ${id}</h3><small>${escape(profileLabels[a.profile]||a.profile)}</small></div>${badge(a.active?'ACTIVE':'ELIMINATED',a.active?'':'breached')}</div><div class="farm-stats"><div><strong>${coins(a.bank-a.debt)}</strong><small>Net balance · coins</small></div><div><strong>${coins(a.profit)}</strong><small>Net profit · coins</small></div><div><strong>${number(a.plants.reduce((n,g)=>n+g.count,0))}</strong><small>Living plants</small></div></div><div class="water-bar"><div class="bar-label"><span>Delivered / requested</span><span>${number(a.delivered)} / ${number(a.request)} L</span></div><div class="bar"><div style="width:${a.request?100*a.delivered/a.request:0}%"></div></div></div><div class="farm-bottom"><span>${number(a.used,3)} L used · ${number(a.returned,3)} L returned</span><button class="text-button" data-agent="${id}">Inspect farm ↗</button></div></article>`).join(''); }
 function newsPanel(s) { const n=s.news;return `<ul class="news-list"><li><strong>Official NEWS · ${n.round?`Round ${n.round}`:'Before round 1'}</strong></li>${n.net_withdrawals?Object.entries(n.net_withdrawals).map(([id,v])=>`<li>Farm ${id} withdrew <strong>${number(v,3)} L net</strong></li>`).join(''):'<li>Initial common pond: 5,000 liters</li>'}${n.total_plants_sold!==undefined?`<li>${number(n.total_plants_sold)} plants sold across all farms</li>`:''}${n.bank_ranking?`<li>Anonymous balances: ${n.bank_ranking.map(coins).join(' · ')} coins</li>`:''}${n.announcements.map(x=>`<li>${escape(x)}</li>`).join('')}</ul>`; }
 function downloads() { return `<div class="toolbar"><a class="download" href="/api/runs/${current}/download/json">↓ Complete JSON</a><a class="download" href="/api/runs/${current}/download/csv">↓ Round data CSV</a><button class="text-button" id="save-export">Save to export directory</button></div>`; }
 function overview() {
   if(!data) return `<div class="welcome"><span class="eyebrow">WELCOME TO COMMON WATER LAB</span><h2>What happens when everyone shares the pond?</h2><p>Observe autonomous farms, follow their decisions, and study whether communication changes the way they share a finite resource. Start with a technical pilot to explore the mechanics.</p><button class="primary" id="welcome-create">Set up your first game →</button><div class="steps"><span>01 &nbsp; Define the conditions</span><span>02 &nbsp; Observe the decisions</span><span>03 &nbsp; Compare the outcomes</span></div></div><div class="metric-grid">${metric('Starting resource','5,000','liters','One shared pond',true)}${metric('Starting capital','500','coins','Default per farm · configurable')}${metric('Population','2–5','farms','Individual goals, shared consequences')}${metric('Research horizon','1,000','rounds','Hidden from the playing agents')}</div><div class="panel" style="margin-top:20px"><h3>A researcher’s view, not an agent’s view.</h3><p class="subtle">You can inspect the complete game here. Agents receive only their own farm data, public NEWS, and permitted conversations. Hidden rules stay outside their prompts.</p></div>`;
   const {state:s,metrics:m,execution:e}=data;
   return `${meta(s)}<div class="metric-grid">${metric('Shared pond',number(s.pond,1),'liters',`${number(s.pond/500,1)}% of 50,000 L capacity`,true)}${metric('Social profit',coins(m.social_profit),'coins','Includes eliminated farms')}${metric('Active farms',`${m.active_agents} / ${s.config.agent_count}`,'farms','Survival through the current phase')}${metric('Model activity',number(e.calls),'calls',`${number(e.seconds,1)} s · ${number(e.tokens)} tokens`)}</div><div class="overview-grid"><section class="panel"><div class="panel-head"><div><h3>The shared resource</h3><p>Actual pond volume · researcher only</p></div><span class="legend">Water available</span></div>${chart(s.history)}<div class="chart-caption"><span>Minimum: ${number(m.minimum_pond,1)} L</span><span>Exact fractions retained in exports</span></div></section><section class="panel"><div class="panel-head"><div><h3>Seven days ahead</h3><p>The same forecast every farm receives</p></div><span>☁</span></div>${weather(s)}<p class="rule-note">Rain enters the pond after returns and settlement. Only this seven-day window is visible to agents.</p></section></div><div class="section-heading"><h2>Independent farms</h2><span class="subtle">A closer look at the individual outcomes</span></div><div class="farm-grid">${farms(s)}</div><section class="panel" style="margin-top:20px"><div class="panel-head"><div><h3>The economic outcome</h3><p>Cumulative social profit · includes eliminated farms</p></div><span class="legend">Coins earned, net of fees</span></div>${chart(s.history,"social_profit",true)}</section><div class="summary-grid"><section class="panel"><div class="panel-head"><h3>The public record</h3><span class="subtle">Official NEWS</span></div>${newsPanel(s)}</section><section class="panel"><div class="panel-head"><h3>Cooperation, measured</h3><span class="subtle">Formal agreements</span></div>${table(['Measure','Result'],[row(['Accepted agreements',m.accepted_agreements]),row(['Group compliance',m.agreement_rates.group.rate===null?'Not applicable':`${number(m.agreement_rates.group.rate*100,1)}%`]),row(['Self-commitment compliance',m.agreement_rates.self.rate===null?'Not applicable':`${number(m.agreement_rates.self.rate*100,1)}%`]),row(['Rounds without agreement',m.rounds_without_agreement])])}<p class="subtle" style="margin:15px 0 0">No agreement is neither cooperation nor a breach.</p></section></div>${s.status==='completed'?`<div class="section-heading"><h2>Final ranking</h2></div><section class="panel">${table(['Farm','Profit · coins','Status','Result'],s.ranking.map(x=>row([`Farm ${x.agent_id}`,coins(x.score),x.active?'Active':'Eliminated',x.winner?badge('WINNER'):'—'])))}${s.ranking.some(x=>x.winner)?'': '<p class="subtle">No winner: every farm was eliminated.</p>'}</section>`:''}<div class="section-heading"><h2>Research exports</h2></div>${downloads()}`;
+}
+function roundReviewPanel(review) {
+  if (!review) return '';
+  const evidence = review.evidence;
+  const changes = (review.changes || []).map(change => {
+    const value = item => typeof item === 'string' ? item : item?.text;
+    return row([escape(change.slot), escape(value(change.previous) || '—'), escape(value(change.current) || '—')]);
+  });
+  return `<article><p><strong>Round ${escape(review.round)} · ${escape(review.choice.replaceAll('_', ' '))}</strong></p>
+    <p>${escape(review.conclusion)}</p>${review.measurement_conflicts ? '<p>Measurement check · ' + escape(Object.values(review.measurement_conflicts).join(' ')) + '</p>' : ''}
+    <p>Next round · ${escape(review.next_intent)}</p>
+    <details><summary>Evidence · ${escape(evidence.ref)}</summary><pre class="memory">${escape(JSON.stringify(evidence.record, null, 2))}</pre></details>
+    ${changes.length ? table(['Changed entry','Previous','Current'], changes) : '<p>No entries changed.</p>'}</article>`;
 }
 function workingMemoryPanel(farm, version) {
   const {memory, profile, last_deliberate_bluff: bluff} = farm;
@@ -62,13 +81,21 @@ function workingMemoryPanel(farm, version) {
   }
   const profileLabels = {short_term: 'Cash decision', reciprocal: 'Partner or verification plan',
     cunning_experimenter: 'Experiment or disclosure plan'};
-  const labels = {goal: ['farm-agent-1.21','farm-agent-1.22'].includes(version) ? profileLabels[profile] : 'Goal',
+  const labels = {goal: ['farm-agent-1.21','farm-agent-1.22','farm-agent-1.23','farm-agent-1.24','farm-agent-1.25'].includes(version) ? profileLabels[profile] : 'Goal',
     open_question: 'Open question', insight: 'Insight'};
   const notes = Object.entries(labels).filter(([key]) => memory?.[key]);
   let workingNotes = notes.length
     ? table(['Note', 'Content'], notes.map(([key, label]) => row([label, escape(memory[key])])))
     : empty('No private notes yet.');
-  if (version === 'farm-agent-1.22') workingNotes += '<button id="note-history">View private note history</button>';
+  if (['farm-agent-1.24','farm-agent-1.25'].includes(version)) {
+    const book = farm.learning || {};
+    if (book.long_term_goal) workingNotes += `<h4>Long-term goal</h4><p>${escape(book.long_term_goal)}</p>`;
+    const entries = Object.entries(book.entries || {});
+    if (entries.length) workingNotes += table(['Entry','Private text','Evidence'], entries.map(([slot,v]) =>
+      row([escape(v.title || slot), escape(v.text), `Round ${escape(v.round)} · ${escape(v.evidence.ref)}`])));
+    workingNotes += '<h4>Latest private round review</h4>' + (roundReviewPanel(book.last_review) || empty('Available after the NEWS exchange.'));
+  }
+  if (['farm-agent-1.22','farm-agent-1.23','farm-agent-1.24','farm-agent-1.25'].includes(version)) workingNotes += '<button id="note-history">View private note history</button>';
   if (!bluff) return workingNotes;
   return workingNotes + `<h3>Last self-declared bluff</h3><p>Round ${escape(bluff.round)} · phase ${escape(bluff.phase)} · turn ${escape(bluff.turn + 1)}</p>` +
     table(['Public statement', 'Private intended benefit'], [row([escape(bluff.statement), escape(bluff.intended_benefit)])]);
@@ -91,6 +118,7 @@ async function loadNoteHistory(firstPage) {
     if (firstPage) content.textContent = '';
     const labels = {goal:'Plan', open_question:'Open question', insight:'Insight'};
     const html = page.changes.map(c => {
+      if (c.kind === 'round_review') return roundReviewPanel(c);
       const source = c.evidence ? `<details><summary>Evidence · ${escape(c.evidence.ref)}</summary><pre class="memory">${escape(JSON.stringify(c.evidence.record,null,2))}</pre></details>` : '';
       return `<article><p><strong>Round ${escape(c.round)} · phase ${escape(c.phase)} · turn ${escape(c.turn+1)} · ${labels[c.field]}</strong></p><p>${escape(c.value || 'Closed / cleared')}</p>${source}</article>`;
     }).join('');
@@ -106,9 +134,35 @@ function evidencePanel(a) {
   return `<section class="panel" style="margin-top:20px"><h3>Measured farming experience</h3><p class="subtle">Each row sums this farm’s observations at one dose across rounds. A new plant counts once at sowing. An existing plant counts each round it receives that dose, including zero.</p>${trials.length?table(['Treatment','Water / plant','Plant observations','First / last round','Died','Growth gain','Health after'],trials.map(t=>row([t.kind==='new_plants'?'New plants':'Existing plants',number(t.water_per_plant,3)+' L',number(t.plants_observed),`${t.first_round} / ${t.last_round}`,number(t.plants_died),`${t.growth_gain_min}–${t.growth_gain_max}`,`${t.health_after_min}–${t.health_after_max}`]))):empty('No executed planting experiment has been observed yet.')}</section>`;
 }
 function agentsView() {
-  if(!data)return empty('Create a game to inspect agent observations.');
-  const s=data.state,a=s.agents[agent]||Object.values(s.agents)[0]; agent=a.id;
-  return `${meta(s)}<div class="toolbar">${Object.keys(s.agents).map(id=>`<button data-select-agent="${id}" class="${id===agent?'primary':''}">Farm ${id}</button>`).join('')}</div><div class="two-col"><section class="panel"><h3>Farm ${agent} · Plant inventory</h3><p class="subtle">Each row groups individual plants with identical states. Last water is per plant, not per group. Groups can be split to water plants differently each round.</p>${a.plants.length?table(['Group','Plants','Growth','Health','Last water / plant'],a.plants.map(g=>row([escape(g.id),number(g.count),`${g.growth}%`,`${g.health} / 20`,`${number(g.water,3)} L`]))):empty('No living plants on this farm.','♧')}</section><section class="panel"><h3>Private working memory</h3>${workingMemoryPanel(a, s.prompt_version)}<h3>Account reconciliation</h3>${table(['Account','Coins'],[row(['Available balance',coins(a.bank)]),row(['Outstanding debt',coins(a.debt)]),row(['Economic net balance',coins(a.bank-a.debt)]),row(['Starting capital + profit',coins(startingCoins(s)*100+a.profit)])])}</section></div>${evidencePanel(a)}<section class="panel" style="margin-top:20px"><h3>Recent plant outcomes</h3>${a.recent_plant_results.length?table(['Round','Group','Water / plant','Growth','Health','Outcome'],a.recent_plant_results.map(x=>row([x.round,escape(x.group.id),number(x.group.water,3)+' L',`${x.before.growth} → ${x.group.growth}`,`${x.before.health} → ${x.group.health}`,escape(x.outcome)]))):empty('Plant outcomes appear after development.')}</section><section class="panel" style="margin-top:20px"><h3>The agent’s actual information boundary</h3><p class="subtle">This filtered observation excludes the pond level, hidden rules, seed, end round, and other farms’ private states.</p><button id="load-observation">Inspect allowed observation</button><pre id="observation-json" hidden></pre></section>`;
+  if (!data) return empty('Create a game to inspect agent observations.');
+  const s = data.state, a = s.agents[agent] || Object.values(s.agents)[0];
+  agent = a.id;
+  const inventory = a.plants.length ? table(['Group','Plants','Growth','Health','Last water / plant'],
+    a.plants.map(g => row([escape(g.id), number(g.count), `${g.growth}%`, `${g.health} / 20`, `${number(g.water,3)} L`])))
+    : empty('No living plants on this farm.', '♧');
+  const accounts = [
+    row(['Net balance', coins(a.bank-a.debt)]), row(['Available cash', coins(a.bank)]),
+    row(['Outstanding debt', coins(a.debt)]), row(['Starting capital + profit', coins(startingCoins(s)*100+a.profit)])
+  ];
+  if (data.game_rules) accounts.push(row(['Transport fee this round', coins(a.delivery_fee)]),
+    row(['Return fee this round', coins(a.return_fee)]), row(['Sales this round', coins(a.revenue)]));
+  const outcomes = a.recent_plant_results.length ? table(['Round','Group','Water / plant','Growth','Health','Outcome'],
+    a.recent_plant_results.map(x => row([x.round, escape(x.group.id), number(x.group.water,3)+' L',
+      `${x.before.growth} → ${x.group.growth}`, `${x.before.health} → ${x.group.health}`, escape(x.outcome)])))
+    : empty('Plant outcomes appear after development.');
+  const rules = data.game_rules ? `<aside class="panel knowledge-panel"><h3>What the agents know</h3>${knowledgeList(data.game_rules)}</aside>` : '';
+  return `${meta(s)}<div class="toolbar">${Object.keys(s.agents).map(id =>
+    `<button data-select-agent="${id}" class="${id===agent?'primary':''}">Farm ${id}</button>`).join('')}</div>
+    <div class="${rules ? 'lab-columns' : ''}"><div class="farm-panels">
+      <section class="panel"><h3>Farm ${agent} · Plant inventory</h3>
+        <p class="subtle">Each row groups plants with identical states. Last water is per plant. Groups can receive different doses each round.</p>${inventory}</section>
+      <section class="panel"><h3>Account reconciliation</h3>${table(['Account','Coins'],accounts)}</section>
+      <section class="panel"><h3>Private working memory</h3>${workingMemoryPanel(a,s.prompt_version)}</section>
+    </div>${rules}</div>
+    ${evidencePanel(a)}<section class="panel" style="margin-top:20px"><h3>Recent plant outcomes</h3>${outcomes}</section>
+    <section class="panel" style="margin-top:20px"><h3>The agent’s actual information boundary</h3>
+      <p class="subtle">Each farm sees its own accounts and observations, official NEWS and permitted conversations.</p>
+      <button id="load-observation">Inspect allowed observation</button><pre id="observation-json" hidden></pre></section>`;
 }
 function conversationEndNote(s) {
   const ended=s.last_conversation_end;if(!ended)return '';
@@ -145,6 +199,8 @@ function eventsView() {
 }
 function render() {
   const scroll=window.scrollY;
+  const version=data?.state.rule_version || serverRuleVersion;
+  $('#rule-version').textContent=version ? `Rules ${version.replace('farm-','')} · Researcher view` : 'Researcher view';
   $('#page-title').textContent=titles[tab];
   $('#content').innerHTML=({overview,agents:agentsView,conversation:conversationView,agreements:agreementsView,experiments:experimentsView,events:eventsView}[tab])();
   if(data) {
@@ -201,7 +257,43 @@ function setupProfiles() {
 }
 async function loadModels(){const chosen=$('#model-select').value;const v=await api('/models');$('#model-status').textContent=v.error||`${v.models.length} installed model(s). No downloads are automatic.`;if(v.models.length){$('#model-select').innerHTML=v.models.map(m=>`<option value="${escape(m.name)}">${escape(m.name)}</option>`).join('');$('#model-select').value=v.models.some(m=>m.name===chosen)?chosen:(v.models.some(m=>m.name==='llama3.1:8b')?'llama3.1:8b':v.models[0].name);}}
 function setupVisibility(){const form=$('#setup-form'),llm=form.elements.controller.value==='ollama';$('#model-fields').hidden=!llm;$('#scenario-field').hidden=llm;if(form.elements.test_mode.value==='false'){form.elements.rounds.value=1000;form.elements.rounds.disabled=true;}else form.elements.rounds.disabled=false;}
-function showSetup(){ $('#setup-error').textContent='';$('#setup').showModal(); }
+function economySettings() {
+  const fields = $('#setup-form').elements;
+  return {
+    harvest_quality: fields.harvest_quality.checked,
+    delivery_fee_coins: fields.delivery_fee_coins.valueAsNumber,
+    return_fee_enabled: fields.return_fee_enabled.checked,
+    return_fee_coins: fields.return_fee_coins.valueAsNumber,
+  };
+}
+let previewRequest = 0;
+async function updateKnowledgePreview() {
+  const fields = $('#setup-form').elements, target = $('#preview-rules');
+  const request = ++previewRequest;
+  fields.return_fee_coins.disabled = !fields.return_fee_enabled.checked;
+  if (fields.return_fee_coins.disabled && !(Number.isInteger(fields.return_fee_coins.valueAsNumber) && fields.return_fee_coins.valueAsNumber >= 0)) {
+    fields.return_fee_coins.value = fields.return_fee_coins.defaultValue;
+  }
+  if (!fields.delivery_fee_coins.validity.valid || !fields.return_fee_coins.validity.valid) {
+    target.textContent = 'Enter whole, nonnegative fees to preview the rules.';
+    return;
+  }
+  try {
+    const rules = await api('/knowledge/preview', 'POST', economySettings());
+    if (request === previewRequest) target.innerHTML = knowledgeList(rules);
+  } catch (error) {
+    if (request === previewRequest) target.textContent = 'Could not load the rules. ' + error.message;
+  }
+}
+$('#economy-settings').hidden = !serverRuleVersion;
+$('#economy-settings').disabled = !serverRuleVersion;
+$('#knowledge-preview').hidden = !serverRuleVersion;
+$('#economy-settings').oninput = updateKnowledgePreview;
+function showSetup() {
+  $('#setup-error').textContent = '';
+  $('#setup').showModal();
+  if (serverRuleVersion) updateKnowledgePreview();
+}
 $('#new-game').onclick=showSetup; $('#close-setup').onclick=()=>$('#setup').close();
 $('#refresh-models').onclick=()=>loadModels().catch(e=>notice(e.message,true));
 $('#setup-form').elements.agent_count.onchange=setupProfiles;
@@ -217,6 +309,7 @@ $('#setup-form').onsubmit=async event=>{
     communication:values.communication==='true',test_mode:values.test_mode==='true',rounds:Number(form.elements.rounds.value),
     seed:Number(values.seed),starting_coins:Number(values.starting_coins),start_agent:Number(values.start_agent),temperature:Number(values.temperature),context_tokens:Number(values.context_tokens),output_tokens:Number(values.output_tokens),timeout_seconds:Number(values.timeout_seconds)};
   for(const key of Object.keys(config))if(key.startsWith('profile-'))delete config[key];
+  if (serverRuleVersion) Object.assign(config, economySettings());
   try{const result=await api('/runs','POST',config);$('#setup').close();await selectRun(result.id);}catch(e){$('#setup-error').textContent=e.message;}
 };
 $('#run-select').onchange=async e=>{data=null;await selectRun(e.target.value);};

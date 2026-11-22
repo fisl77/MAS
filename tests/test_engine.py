@@ -52,6 +52,66 @@ def test_death_before_sale_and_current_quality():
     assert a["profit"] == 2400 and a["bank"] == 52400
 
 
+@pytest.mark.parametrize("quality", [True, False])
+@pytest.mark.parametrize("health", [1, 15, 20])
+def test_price_per_living_plant_and_death_at_maturity(quality, health):
+    s = game(harvest_quality=quality)
+    a = s["agents"]["A"]
+    a["plants"] = [{"id": "ripe", "count": 2, "growth": 90, "health": health, "water": F(2)},
+                   {"id": "dead", "count": 1, "growth": 90, "health": 3, "water": F(8)}]
+    grow(s)
+    price = (health if quality else 20) * 100
+    sale, = (e for e in s["events"] if e["kind"] == "sale")
+    assert sale["price_per_plant"] == price and a["revenue"] == 2 * price
+    assert (a["sold"], a["lost"], a["plants"]) == (2, 1, [])
+
+
+@pytest.mark.parametrize("dose,mature,returns,fee,expected", [
+    ("3", True, True, 40, 7),          # Uses all water, repays 8 coins of transport debt.
+    ("2.999", True, True, 40, -33),    # Even 0.001 L triggers one fee.
+    ("2.999", True, True, 7, 0),
+    ("2.999", True, False, 40, 7),
+    ("2.999", True, True, 0, 7),
+    ("3", False, False, 40, -8),
+])
+def test_round_settlement_after_sales_and_returns(dose, mature, returns, fee, expected):
+    s = game(rounds=1, starting_coins=12, return_fee_enabled=returns, return_fee_coins=fee)
+    a = s["agents"]["A"]
+    a["plants"] = [{"id": "A-p1", "count": 1, "growth": 90 if mature else 0, "health": 15}]
+    while s["phase"] < 3:
+        advance(s, {aid: Decision() for aid in active_ids(s)})
+    advance(s, {"A": Decision(request=3), "B": Decision(request=0)})
+    assert observation(s, "A")["own_farm"]["net_balance"] == -800 and a["active"]
+    advance(s, {"A": Decision(irrigation=[{"group_id": "A-p1", "count": 1, "water_per_plant": dose}]),
+                "B": Decision()})
+    advance(s)
+    assert a["active"] and a["bank"] - a["debt"] == (700 if mature else -800)
+    advance(s)
+    assert a["returned"] == 3 - water(dose)
+    assert a["fees"] == a["delivery_fee"] + a["return_fee"] == 2000 + (fee * 100 if returns and a["returned"] else 0)
+    assert a["bank"] - a["debt"] == 100 * expected == 1200 + a["profit"]
+    assert a["active"] == (expected > 0)
+    assert s["agents"]["B"]["fees"] == 0
+    while s["status"] != "completed":
+        advance(s, {aid: scripted(s, aid) if s.get('review_pending') else Decision()
+                    for aid in active_ids(s)} if s["news_ready"] else {})
+    assert ("A" in s["news"]["net_withdrawals"]) == (expected > 0)
+
+
+def test_fees_follow_actual_liters_and_can_both_be_free():
+    s = game(delivery_fee_coins=0, return_fee_enabled=False)
+    s["pond"] = F(1)
+    for a in s["agents"].values():
+        a["request"] = 5
+    deliver(s)
+    settle(s)
+    a, b = s["agents"].values()
+    assert (a["delivered"], b["delivered"]) == (1, 0)
+    assert a["returned"] == 1 and s["pond"] == 1
+    assert all(farm["fees"] == 0 for farm in (a, b))
+    assert not any(e["kind"] == "fee" for e in s["events"])
+
+
 @pytest.mark.parametrize("requests,pond,expected", [
     ({"A":10,"B":30,"C":50},100,{"A":10,"B":30,"C":50}),
     ({"A":13,"B":50},25,{"A":13,"B":12}),
@@ -86,21 +146,21 @@ def test_start_rotation_independent_of_requests_and_skips_eliminated():
     assert s["start"]==2
 
 
-def test_insolvent_delivery_reallocated_without_payment():
+def test_low_cash_does_not_change_water_allocation():
     s=game();s["pond"]=F(5)
     a,b=s["agents"].values()
     a.update(bank=1900,profit=-48100,request=10)
     b["request"]=10
     deliver(s)
-    assert not a["active"] and a["delivered"]==0 and a["fees"]==0
-    assert b["delivered"]==5 and b["fees"]==2000 and s["pond"]==0
+    assert a["active"] and a["delivered"]==3 and a["fees"]==2000 and a["debt"]==100
+    assert b["delivered"]==2 and b["fees"]==2000 and s["pond"]==0
 
 
-def test_zero_balance_without_obligation_is_active():
+def test_zero_balance_without_obligation_eliminated_at_settlement():
     s=game();a=s["agents"]["A"];a.update(bank=0,profit=-50000,request=0)
     deliver(s)
     assert a["active"]
-    a["request"]=1;deliver(s)
+    settle(s)
     assert not a["active"]
 
 
@@ -183,7 +243,7 @@ def test_complete_games_water_accounts_and_round_trip(count,communication,starti
     forecasts={x["round"]:x["weather"] for x in s["news"]["forecast"]}
     before=F(5000)
     while s["status"]!="completed":
-        actors = speaker_order(s)[:1] if communication and s["phase"] in (2,7) else active_ids(s)
+        actors = speaker_order(s)[:1] if communication and s["phase"] in (2,7) and not s['review_pending'] else active_ids(s)
         decisions={a:scripted(s,a) for a in actors} if s["phase"] in (1,2,3,4) or s["phase"]==7 and s["news_ready"] else {}
         phase=s["phase"]
         advance(s,decisions)
@@ -253,6 +313,7 @@ def test_resource_minimum_includes_delivery_trough_before_rain():
 def test_observations_do_not_leak_elimination_before_public_news():
     s=game(communication=True);s['agents']['A'].update(bank=0,profit=-50000,request=1)
     deliver(s)
+    settle(s)
     assert not s['agents']['A']['active']
     assert observation(s,'B')['active_agents']==['A','B']
     assert observation(s,'B')['conversation_status']['known_eliminated_agents']==[]

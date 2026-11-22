@@ -50,7 +50,7 @@ healthy plants receiving four liters every day, with harvested plants replaced o
 the next day. Ignoring transient planting and liquidity effects, sufficient supply
 supports one harvest per plant every five days. Average sale revenue is therefore
 `4k` coins per day, gross water use `4k` liters per day, and the daily delivery fee
-is 20 coins when there is a positive delivery. The steady-cycle private net is
+is 20 coins at the default transport setting when there is a positive delivery. The steady-cycle private net at that setting is
 `4k − 20` coins per day when no water is returned. This is a feasible-policy
 accounting reference under its assumptions, **not** a game-wide optimum or Nash
 equilibrium. It does not account for rationing, weather, exploration, imperfect

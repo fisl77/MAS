@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from fastapi.testclient import TestClient
 
 from farm.app import create_app
-from farm.agents import model_decision, TechnicalError, prompt_messages, model_format
+from farm.agents import model_decision, TechnicalError, prompt_messages, model_format, scripted
 from farm.engine import new_game, advance
 from farm.conversation import speaker_order
 from farm.runner import Runner
@@ -72,6 +72,8 @@ def test_simultaneous_decisions_and_no_request_leak(tmp_path,monkeypatch):
     seen=[]
     async def models():return [{'name':'test-model','digest':'fixed'}]
     async def decide(s,aid,obs,*args):
+        if s['review_pending']:
+            return scripted(s, aid)
         seen.append((aid,deepcopy(obs)))
         if s['phase']==3:return Decision(request=19 if aid=='A' else 0)
         if s['phase']==2 and s['turn']==0:return Decision(pass_turn=False,message=f'Hello from {aid}')
@@ -134,6 +136,8 @@ def test_worker_ends_repetition_and_two_silent_passes(tmp_path,monkeypatch):
     seen=[]
     async def models():return [{'name':'test-model','digest':'fixed'}]
     async def decide(s,aid,obs,*args):
+        if s['review_pending']:
+            return scripted(s, aid)
         seen.append((s['phase'],s['turn'],aid))
         if s['phase']==2:return Decision(pass_turn=False,message='I will request 100 liters.',memory=f'Private step {s["turn"]}')
         return Decision(request=0) if s['phase']==3 else Decision()
@@ -181,7 +185,7 @@ def test_prompt_allowlist_and_complete_context_records():
 
 def test_phase_specific_schemas_do_not_offer_forbidden_actions():
     for phase, communication, allowed in (
-        (1, True, {'memory','recall_query','planned_sowing'}),
+        (1, True, {'memory','recall_query','planned_sowing','planned_irrigation'}),
         (2, False, {'memory','recall_query','pass_turn'}),
         (3, True, {'memory','recall_query','request'}),
         (4, True, {'memory','recall_query','new_plants','irrigation'}),
@@ -198,7 +202,7 @@ def test_discussion_instructions_preserve_schema_without_suggesting_terms(phase,
     s['agents']['B']['memory']='FOREIGN_MEMORY_MUST_STAY_PRIVATE'
     messages=prompt_messages(s,aid,observation(s,aid))
     system=messages[0]['content']
-    assert '725 coins (72500 cents)' in system
+    assert '725 coins' in system and 'cents' not in system
     assert 'FOREIGN_MEMORY_MUST_STAY_PRIVATE' not in json.dumps(messages)
     assert 'Proposal format example' not in system and 'max_request": 100' not in system
     assert 'Choose participants, dates and limits from your own intended plan' in system
@@ -249,6 +253,8 @@ def test_last_pass_proposal_allows_acceptance_in_a_later_conversation(phase):
     body={'pass_turn':False,'contracts':[{'kind':'propose','start_round':2,'end_round':3,
           'limits':[{'agent_id':x,'max_request':13} for x in ('A','B')]}]}
     advance(s,{'A':Decision.model_validate(body)})
+    if s['review_pending']:
+        advance(s, {aid: scripted(s, aid) for aid in s['agents']})
     # After phase 2's last pass, the next window is NEWS. After phase 7, it is next round's discussion.
     while not (s['phase']==2 or (s['phase']==7 and s['news_ready'])):
         decisions={a:Decision(request=0) if s['phase']==3 else Decision() for a in s['agents']} if s['phase'] in (1,3,4) else {}
@@ -318,6 +324,44 @@ def test_model_schema_limits_only_physical_access_not_biology():
     assert 'maximum' not in schema['$defs']['NewPlants']['properties']['count']
 
 
+@pytest.mark.parametrize('quality,returns', [(True,False), (False,True)])
+def test_public_game_rules_reach_every_decision_phase(quality, returns):
+    s = new_game(Config(harvest_quality=quality, delivery_fee_coins=9, return_fee_enabled=returns,
+                        return_fee_coins=11, communication=True))
+    s['pond'] = Fraction(1234567, 1000)
+    for phase in (1,2,3,4,7):
+        s.update(phase=phase, news_ready=phase==7)
+        obs = observation(s,'A')
+        messages = prompt_messages(s,'A',obs)
+        rules = json.loads(messages[1]['content'])['observation']['game_rules']
+        assert rules == obs['game_rules']
+        assert ('final health / 20' in rules['Plants']) == quality
+        assert ('fixed 11 coins' in rules['Returns']) == returns
+        assert 'fixed 9 coins' in rules['Transport']
+        text = ' '.join(m['content'] for m in messages)
+        for hidden in ('1234.567', '1000 +', '4–21', '2–7', 'fixed 40 coins', 'for their health in coins'):
+            assert hidden not in text
+
+
+def test_historical_game_inspection_keeps_recorded_knowledge(tmp_path):
+    app = create_app(tmp_path/'historical.sqlite3')
+    old = new_game(Config(controller='ollama'))
+    old.update(rule_version='farm-1.5', prompt_version='farm-agent-1.22')
+    for field in ('harvest_quality','delivery_fee_coins','return_fee_enabled','return_fee_coins'):
+        del old['config'][field]
+    for a in old['agents'].values():
+        del a['delivery_fee'], a['return_fee']
+    rid = app.state.store.create(old)
+    saved = observation(old,'A')
+    app.state.store.accept(rid,'1:1:0:A','A',Decision().model_dump(),saved)
+    with TestClient(app) as client:
+        run = client.get(f'/api/runs/{rid}').json()
+        assert run['game_rules'] is None and run['state']['config'] == old['config']
+        assert client.get(f'/api/runs/{rid}/agents/A').json() == saved
+        assert 'game_rules' not in client.get(f'/api/runs/{rid}/agents/B').json()
+        assert app.state.store.load(rid) == loads(dumps(old))
+
+
 def test_api_and_exports(tmp_path):
     app=create_app(tmp_path/'test.sqlite3')
     with TestClient(app) as client:
@@ -382,9 +426,17 @@ def test_custom_capital_profile_exports_and_queues(tmp_path):
     import io
     app=create_app(tmp_path/'capital.sqlite3')
     with TestClient(app) as client:
-        config={'rounds':1,'starting_coins':725,'profiles':['cunning_experimenter','reciprocal']}
+        economy={'harvest_quality':False,'delivery_fee_coins':13,'return_fee_enabled':False,'return_fee_coins':67}
+        config={'rounds':1,'starting_coins':725,'profiles':['cunning_experimenter','reciprocal'],**economy}
         rid=client.post('/api/runs',json=config).json()['id']
-        initial=client.get('/api/runs/'+rid).json()['state']
+        run=client.get('/api/runs/'+rid).json()
+        initial=run['state']
+        rules=client.post('/api/knowledge/preview',json=economy).json()
+        assert run['game_rules']==rules==client.get(f'/api/runs/{rid}/agents/A').json()['game_rules']
+        assert 'sells for 20 coins' in rules['Plants'] and 'final health /' not in rules['Plants']
+        assert 'fixed 13 coins' in rules['Transport'] and 'Returning any amount is free' in rules['Returns']
+        for field, invalid in [('delivery_fee_coins',-1),('return_fee_coins',1.5),('harvest_quality','false')]:
+            assert client.post('/api/runs',json={field:invalid}).status_code==422
         assert initial['agents']['A']['bank']==72500 and initial['agents']['A']['profile']=='cunning_experimenter'
         assert client.post('/api/runs',json={'starting_coins':0}).status_code==422
         client.post(f'/api/runs/{rid}/start')
@@ -392,13 +444,17 @@ def test_custom_capital_profile_exports_and_queues(tmp_path):
         client.portal.call(join)
         exported=client.get(f'/api/runs/{rid}/download/json').json()
         assert exported['state']['config']['starting_coins']==725
+        assert all(exported['state']['config'][k]==v for k,v in economy.items())
         rows=list(csv.DictReader(io.StringIO(client.get(f'/api/runs/{rid}/download/csv').text)))
         assert rows[0]['starting_coins']=='725' and rows[0]['profile']=='cunning_experimenter'
+        assert all(rows[0][k]==str(v) for k,v in economy.items())
+        assert rows[0]['delivery_fee']=='1300' and rows[0]['net_balance']=='71200'
         queue=client.post('/api/experiments',json={'base':initial['config'],'seeds':[42],
                             'balance_positions':False}).json()
         for item in queue['runs']:
             state=app.state.store.load(item['run_id'])
             assert state['config']['starting_coins']==725
+            assert all(state['config'][k]==v for k,v in economy.items())
             assert state['agents']['A']['bank']==72500
             assert state['agents']['A']['profile']=='cunning_experimenter'
 
@@ -449,6 +505,8 @@ def test_pause_between_public_speakers_reuses_accepted_action_and_publishes_once
         async def models():
             return [{'name':s['config']['model'], 'digest':'fixture'}]
         async def choose(state, aid, obs, *args):
+            if state['review_pending']:
+                return scripted(state, aid)
             if state['phase']==2:
                 seen.append((state['turn'], aid))
                 if state['turn']==0:

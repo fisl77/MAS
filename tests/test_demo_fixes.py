@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from farm.agents import model_format, prompt_messages, model_decision, contract_action_options
+from farm.agents import model_format, prompt_messages, model_decision, contract_action_options, scripted
 from farm.contracts import apply_contract_action
 from farm.engine import new_game, advance, farm_work, grow, validate_decision
 from farm.evidence import seedling_trial_hint
@@ -68,6 +68,8 @@ def test_worker_skips_exhausted_agents_but_they_return_in_news(tmp_path,monkeypa
     seen=[]
     async def models():return [{'name':'test-model','digest':'fixed'}]
     async def choose(s,aid,obs,*args):
+        if s['review_pending']:
+            return scripted(s, aid)
         seen.append((s['phase'],s['turn'],aid))
         if s['phase']==2 and (aid=='A' or s['turn']==19):
             return Decision(pass_turn=False,message=f'I propose a limit of {s["turn"]+1} liters.')
@@ -290,7 +292,10 @@ def test_private_trial_plan_carries_exact_water_forward_and_expires_after_one_ro
         advance(s, {'A': Decision(request=6) if phase == 3 else Decision()})
     assert s['agents']['A']['plants'] == []
     while s['round'] == 1:
-        decisions = {speaker_order(s)[0]: Decision()} if s['phase']==7 and s['news_ready'] else {}
+        if s['review_pending']:
+            decisions = {aid: scripted(s, aid) for aid in s['agents']}
+        else:
+            decisions = {speaker_order(s)[0]: Decision()} if s['phase']==7 and s['news_ready'] else {}
         advance(s, decisions)
     assert 'planned_sowing' not in s['agents']['A']
 

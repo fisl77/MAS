@@ -1,6 +1,6 @@
 # Authoritative rule reference — researcher only
 
-Rule version: `farm-1.5`. This file is not an agent prompt.
+Current rules: `farm-1.6`. Agents receive the public subset in their observations.
 
 ## Starting state and objective
 
@@ -32,8 +32,9 @@ initial watering sets health to 20, then applies the normal rule in that same ro
 | Above 8 | 0 | −8 |
 
 Clamp growth to 100 and health to 0–20. At zero health the plant dies before any
-harvest check. A surviving plant reaching 100% is sold automatically for health
-in coins, then removed. Thus a fully healthy plant sells for 20 coins. Plant count
+harvest check. A surviving plant reaching 100% is sold automatically and removed.
+With harvest quality enabled (default), its price is 20 coins times final health / 20.
+With quality disabled every living ripe plant sells for 20 coins. Plant count
 is an integer; irrigation uses at most three decimal places per plant. Formal
 validation does not reject a biologically harmful decision.
 
@@ -45,17 +46,19 @@ on positive requests. Deliver one liter to each active farm with an outstanding
 request in turn, until no demand or fewer than one liter remain. Never deliver
 more than requested. A fractional remainder stays in the pond.
 
-Before physical delivery, eliminate any prospective recipient unable to pay the
-20-coin delivery charge. Recompute all allocations using the unchanged pond and
-same relative order. Repeat until every positive recipient can pay; only then
-deliver and charge once per recipient, never per portion. A zero allocation has
-no fee. A zero balance alone does not eliminate a farm.
+Charge each recipient once for a positive delivery. The default is 20 coins.
+Available cash pays the fee and any shortfall becomes debt. All active farms can
+receive water, including farms whose balance becomes negative. Harvest sales repay
+debt first and credit the rest to cash. Record the full sale as revenue once.
 
-Water is available for the current round only. Unused water returns after harvest,
-costing an additional 40 coins whenever the return is positive. Even if that fee
-cannot be fully paid, return all unused water and record the full expense. Deduct
-available money, record the remainder as debt, and eliminate the farm immediately.
-Remove all plants at elimination. Returned water is not redistributed in that round.
+Unused water returns after harvest. A positive return triggers the configured flat fee
+(default 40 coins). Disabling return fees makes every return free. Both fees accept
+whole coins from zero upward. Returned water becomes available for the next round.
+After all sales and fees, eliminate each farm with cash minus debt at or below zero,
+including rounds without a harvest. Remove its remaining plants.
+
+Through version 1.5, positive deliveries required 20 coins upfront, returns cost 40,
+and exact zero alone allowed a farm to survive. Historical runs retain their recorded version.
 
 ## Weather and round order
 
@@ -64,13 +67,13 @@ integers: dry 2–7 days; rainy 4–21. Maintain three consecutive phases using 
 weather-only RNG. Each rainy day's inflow is `1000 + pond_before_rain / 1000` liters.
 Dry days add nothing. Apply rain after returns, then discard capacity overflow.
 
-1. Private strategy planning.
+1. Privately choose provisional sowing and existing-group irrigation, including counts and doses.
 2. Optional public discussion, or optional private reflection in the control condition.
 3. Collect all requests without exposing peers' current decisions; allocate and charge.
 4. Plant and allocate the actual delivered water.
 5. Update health/growth, remove dead plants, sell living mature plants.
 6. Return unused water, charge, eliminate if needed, evaluate contracts, then add rain.
-7. Publish official NEWS, then optional conversation/reflection. Check for completion.
+7. Publish official NEWS and hold the public exchange or private control steps. Each surviving farm then completes one private review of the settled round, including the final round.
 
 The next round starts only after phase 7. If all farms are eliminated, weather and
 the pond series continue without agent actions to the configured final round.
@@ -83,7 +86,9 @@ opener. Each published turn, including agreement actions, is committed before th
 After a pass a farm can still reply. All remaining eligible farms passing consecutively, exhausted
 budgets or two full cycles of passes and repeated contributions end the phase. New claims, first
 personal stances, changed offers and fresh signatures reset the cycle counter. A change of agreement
-ID alone in the text is an echo. The model gets one chance to reconsider an echo and may publish it.
+ID alone in the text is an echo. The model's echoed text stays in the call log.
+It consumes no speaking budget. An accompanying new signature or changed agreement
+is published and consumes one contribution. Passing preserves private note edits.
 Private reflection ends after two silent steps or ten steps. Water orders remain simultaneous.
 Identical pending/active agreement terms reuse a contract ID; an explicit matching
 proposal signs those same terms for that actor. Already recorded signatures do not
@@ -101,7 +106,9 @@ farms, the combined number of plants sold, sorted anonymous surviving balances,
 exactly seven forecast days, and one-time elimination announcements with no score.
 An eliminated farm's sales earlier that round may contribute to the aggregate.
 
-No current pond level, rival detailed accounts/plants/sales, secret biology, extra
+Agents know the starting volume and capacity, the seven-day forecast, plant
+health/growth ranges, automatic harvest, active price and fees, and the settlement deadline.
+No current pond level, rival detailed accounts/plants/sales, secret biology, exact spell durations, extra
 rain term, future weather outside the forecast, seed, exact end round, tie rule,
 private memories, or researcher configuration enters agent observations. Public
 agent claims may be false and do not receive automatic private-state verification.

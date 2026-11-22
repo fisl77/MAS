@@ -3,16 +3,18 @@ from copy import deepcopy
 from itertools import takewhile
 from math import ceil
 import re
-from .schema import PUBLIC_MESSAGE_LIMIT, REPETITION_PASS_LIMIT, water, working_notes
+from .schema import PUBLIC_MESSAGE_LIMIT, REPETITION_PASS_LIMIT, working_notes
 from .water_budget import liters_text
 from .conversation import current_progress, phase_budget, public_discussion, speaker_order, turn_messages
 from .evidence import cultivation_evidence
 from .experience import recent_changes
+from .knowledge import INITIAL_POND, agent_knowledge
+from .learning import learning_context, own_caps, plan_amounts, review_facts, water_quote
 
 
 def conversation_status(s, aid=None):
     public_active = list(s.get("public_active_agents", s["agents"]))
-    phase_open = s.get("status") != "completed" and s["config"]["communication"] and (s["phase"] == 2 or (s["phase"] == 7 and s["news_ready"]))
+    phase_open = s.get("status") != "completed" and s["config"]["communication"] and not s.get('review_pending') and (s["phase"] == 2 or (s["phase"] == 7 and s["news_ready"]))
     budget = phase_budget(s)
     used = {a: budget['messages_used'].get(a, 0) for a in public_active}
     remaining = {a: max(0, PUBLIC_MESSAGE_LIMIT-used[a]) for a in public_active}
@@ -38,23 +40,41 @@ def observation(s, aid, *, store=None, rid=None):
     own = {k: deepcopy(a[k]) for k in ("id", "profile", "bank", "profit", "debt", "plants",
            "request", "delivered", "returned", "used", "sold", "lost", "fees", "revenue")}
     own["memory"] = working_notes(a["memory"])
+    review = bool(s.get('review_pending'))
+    if a.get('learning'):
+        own['learning'] = learning_context(a, s['phase'], review)
     if 'last_deliberate_bluff' in a:
         own['last_deliberate_bluff'] = deepcopy(a['last_deliberate_bluff'])
     own["recent_plant_results"] = recent_changes(a["recent_plant_results"])
     own["other_plant_results"] = len(a["recent_plant_results"]) - len(own["recent_plant_results"])
     value = {"round": s["round"], "phase": s["phase"], "conversation_turn": s["turn"],
              "own_farm": own, "news": deepcopy(s["news"]),
-             "known_initial_pond_liters": 5000, "active_agents": list(s.get("public_active_agents", s["agents"])),
+             "known_initial_pond_liters": INITIAL_POND, "active_agents": list(s.get("public_active_agents", s["agents"])),
              "recalled_experiences": []}
+    if "harvest_quality" in s["config"]:
+        value["game_rules"] = agent_knowledge(s["config"])
+        own.update(net_balance=a["bank"] - a["debt"], delivery_fee=a["delivery_fee"], return_fee=a["return_fee"])
     own['cultivation_evidence'] = cultivation_evidence(a, compare_doses=s["phase"] in (1, 3, 4))
-    if s["phase"] in (3, 4) and 'planned_sowing' in a:
-        plan = a['planned_sowing']
+    if s["phase"] in (3, 4) and ('planned_sowing' in a or 'planned_irrigation' in a):
+        plan = a.get('planned_sowing', [])
         own['planned_sowing'] = deepcopy(plan)
-        sowing_liters = sum(entry['count'] * water(entry['water_per_plant']) for entry in plan)
+        sowing_liters, existing = plan_amounts(a)
+        total = sowing_liters + existing
+        own['planned_irrigation'] = deepcopy(a.get('planned_irrigation', []))
+        own['planned_irrigation_liters'] = liters_text(existing)
+        own['planned_total_liters'] = liters_text(total)
+        if s['phase'] == 3:
+            own['order_if_following_plan'] = water_quote(s['config'], ceil(total), total)
+            if s['history']:
+                old = s['history'][-1]['agents'][aid]['request']
+                if old != ceil(total):
+                    own['if_repeating_last_order_in_full'] = water_quote(s['config'], old, total)
+        else:
+            own['actual_delivery_against_plan'] = water_quote(s['config'], a['delivered'], total)
         own['planned_sowing_liters'] = liters_text(sowing_liters)
         if s['phase'] == 3:
             own['whole_liters_for_planned_sowing_alone'] = ceil(sowing_liters)
-            if a['plants']:
+            if a['plants'] and 'planned_irrigation' not in a:
                 repeat_liters = sum(g['count'] * g['water'] for g in a['plants'])
                 own['whole_liters_if_also_repeating_last_irrigation'] = ceil(sowing_liters + repeat_liters)
     if s["config"]["communication"]:
@@ -69,8 +89,19 @@ def observation(s, aid, *, store=None, rid=None):
         value["own_agreement_results"] = [{"round": x["round"], "contract_id": x["contract_id"],
             "own_result": deepcopy(x["individual"][aid])} for x in recent
             if x["round"] == published_round and aid in x["individual"]][::-1]
+        if s['phase'] in (1, 3, 4) or review:
+            caps = own_caps(s, aid)
+            if caps:
+                own['effective_voluntary_caps'] = caps
+            for result in reversed(s['contract_results']):
+                if aid in result['individual']:
+                    own['last_evaluated_commitment'] = {'round': result['round'], 'contract_id': result['contract_id'],
+                                                        **deepcopy(result['individual'][aid])}
+                    break
+    if review:
+        value['private_round_records'] = review_facts(s, aid)
     if store is not None:
-        public = s["config"]["communication"] and s["phase"] in (2, 7)
+        public = s["config"]["communication"] and s["phase"] in (2, 7) and not review
         lookup = value
         turn_text = ''
         if public:
@@ -83,6 +114,10 @@ def observation(s, aid, *, store=None, rid=None):
                     turn_text += ' Farm ' + msg['sender']
             value['focused_recall'] = True
         value["recalled_experiences"] = store.decision_recall(rid, aid, lookup, a["recall_query"], turn_text, public)
+        if a['recall_query'] and hasattr(store, 'recall_reviews'):
+            archive = store.recall_reviews(rid, aid, a['recall_query'])
+            if archive:
+                own['private_archive'] = archive
     return value
 
 

@@ -164,6 +164,11 @@ def decision_recall(db, rid, aid, obs, query, turn_text='', public=False):
             if include(measured(text)[:1]):
                 return list(candidates.values())
         asks_for_trial = DOSE.search(text) and re.search(r'\b(?:own|my|our|test\w*|grow\w*|health|surviv\w*)\b', text, re.I)
+        if public and text == turn_text and '?' in text and not DOSE.search(text):
+            addressed = peers_in(text)
+            if (not addressed or aid in addressed) and re.search(r'\b(?:experiments?|trials?|test results?)\b', text, re.I):
+                if include(measured('plant')[:1]):
+                    return list(candidates.values())
         if not asks_for_trial and include(social):
             return list(candidates.values())
         amounts = [n.replace(',', '.') for n in DOSE.findall(text)]
@@ -205,6 +210,7 @@ def shown_sources(obs):
             refs[f'{prefix}:{i}'] = row
     refs.update((c['id'], c) for c in records(obs.get('agreements', [])))
     own = obs['own_farm']
-    refs['accounts'] = {k: own[k] for k in ('id', 'bank', 'profit', 'fees', 'revenue', 'delivered', 'returned')}
+    refs['accounts'] = {k: own[k] for k in ('id', 'bank', 'debt', 'net_balance', 'profit', 'fees',
+                                            'delivery_fee', 'return_fee', 'revenue', 'delivered', 'returned') if k in own}
     refs['news'] = obs['news']
     return refs

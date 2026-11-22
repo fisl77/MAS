@@ -78,6 +78,31 @@ amount in **New game → Starting coins per farm**. The amount is recorded in th
 game configuration, agent instructions, JSON/CSV exports and paired experiment queues.
 Recorded games without this setting retain their historical 200-coin starting capital.
 
+In **New game → Harvest and water fees**, choose health-based pricing, a whole-coin
+transport fee per positive delivery (default 20), and an optional fee per positive
+return (default 40). With quality on, selling at 15/20 health earns 15 coins per plant.
+With quality off, a living ripe plant earns 20. Water returns automatically in either case.
+Delivery can put a farm into debt. Sales repay debt, then returns are settled. Farms
+with a net balance of zero or less at that point are eliminated, even in rounds without sales.
+The setup preview and Agent laboratory show the same public rules the agents receive.
+New games use rules `farm-1.7` and prompt `farm-agent-1.26`. Model-facing accounts,
+archived account observations and official NEWS balances use coins. The engine and round-data CSV use cents.
+The Windows pilots use `data/lab-learning-1-25.sqlite3` on port 8772.
+
+From PowerShell in this project, resume access to those pilots with
+
+```powershell
+$env:FARM_DB = (Join-Path $PWD 'data\lab-learning-1-25.sqlite3')
+$env:PORT = '8772'
+.\.venv-windows\Scripts\python.exe run.py
+```
+
+For the earlier Windows game `a5e41c403a34`, the verified 1.6 snapshot and its
+`Start-Previous.ps1` launcher are under `data/versions/farm-1.6-a022ebb390cb/`.
+The launcher opens the earlier database on port 8770. Choose Resume in that
+dashboard to continue the saved NEWS turn with `llama3.1:8b`. The same folder
+contains a separate checkpoint backup.
+
 Farm-work responses combine identical treatments using `count`; different doses
 remain separate. With zero delivery, only one sowing dose is possible, so the model
 format permits one combined new-plant entry and one irrigation entry per existing
@@ -193,11 +218,11 @@ sees the last published turn immediately. Checkpoints preserve the speaker order
 Original messages are retained and ending reasons/budgets are shown in Conversation.
 
 Repetition checks compare all speakers, while protecting fresh concise personal
-consent and actual new signatures. Two full speaking cycles without new content or any
-changed agreement end the phase early. One repeated draft can be reconsidered within
-the existing response-attempt limit before publication. Every original draft remains
-in the call log and every published response remains in the event log. A repeated
-final response contributes to the phase progress counter. Identical agreement
+consent and actual new signatures. A model draft that echoes the current discussion
+counts as a free pass. If the farm also signs or changes an agreement, the action
+is published with its receipt. An identical generic question from the preceding
+two rounds is also withheld. Questions about a new round or dose can be asked again.
+Original drafts remain in the model call log. Identical agreement
 terms reuse the same contract ID; an explicit identical proposal adds the proposer's
 signature to those exact terms if it is new. Repeating one's own signature changes
 nothing. Changed participants, limits, dates or replacement references remain distinct.
@@ -216,11 +241,17 @@ strategic advantage. Delivery and return charges remain payable by the receiving
 farm, including when it signs an agreement. Experiments use the configured temperature
 and record every retry.
 
-Common fee-sharing or fee-waiver claims trigger an advisory review before publication,
-once per decision, independently of the echo review and two allowed format corrections. This
-heuristic does not establish whether a statement is false or intentionally deceptive.
-The model chooses its final statement; the cunning profile may still deliberately
-mislead peers, while its private calculations must use the actual fees. Agreement
+Before publication the adapter checks common claims about fee amounts, changes,
+sharing and dated personal charges against the game's tariffs and the farm's accounts.
+During both public phases the farm has zero unspent water. Orders use whole liters.
+Formal agreements can limit the farm's request or net withdrawal. Existing named
+bounds are checked against the public register.
+The farm can quote the configured tariffs with `[[fees]]`, an executed treatment
+with `[[trial]]`, or its own latest settled delivery, use, return and charges with `[[water]]`.
+The farm gets a correction opportunity. A remaining conflict withholds the message
+while preserving independent valid actions and private note changes. The cunning
+profile can still mark a deliberate bluff about its private crop results on the first draft.
+Public tariffs apply to every profile. Agreement
 limits are upper bounds, not water orders or required quantities. Separate output
 schema alternatives prevent a pass from also containing text or agreement actions.
 
@@ -298,7 +329,7 @@ substitute farming strategy is inserted.
 accepted decisions, observations, model request/response traces, and experiment
 queues. The directory is ignored by Git. Phases and public speaking turns commit
 state and events in the same transaction. Each decision has the stable key
-`round:phase:turn:agent`, unique within its game. Restart reuses accepted decisions
+`round:phase:turn:agent`, with an additional `:review` suffix for the final private review. Restart reuses accepted decisions
 instead of requesting or executing them twice. An interrupted, unaccepted model
 request may be retried, but has no game effects before acceptance.
 
@@ -318,10 +349,26 @@ contribution, and at most one relevant owner observation. Peer claims retain the
 The compact agreement register puts mentioned IDs and proposals awaiting this farm's signature
 first and preserves every open or active agreement's exact terms.
 
-Each farm has three private working notes of up to 240 characters each: a goal,
-an open question and an insight. Omitted fields persist and an empty string clears
-that field. The farm sees up to four distinct recent watering outcomes with before
-and after growth and health. Its separate SQLite experience archive records every
+Phase 1 covers provisional sowing and irrigation of existing groups. Phase 3 shows
+their combined water requirement, the projected return and its fee under full delivery.
+A draft order that would incur a return fee gets one confirmation opportunity.
+Phase 4 compares the actual delivery with the plan and accepts new choices.
+Effective voluntary request and net-use caps and their latest evaluated outcome are private decision inputs.
+
+The immediate plan, open question and insight can change during ordinary decisions.
+After each NEWS exchange every surviving farm privately cites one of its own round records,
+records a conclusion and chooses an intention for its next decision. Each farm can keep
+a long-term goal, three open questions or tests, six named working notes and twelve lessons.
+The farm selects which entry to replace or retire. Regular decisions retrieve up to three
+relevant active entries. The review shows the active notebook. A query such as
+`archive lesson:2` or `archive round 4` retrieves previous private versions.
+The agent laboratory displays the latest review, cited record and changes. Its history
+includes confirmations and decisions to retain a strategy. The model sees the actual cited
+measurement alongside each selected lesson. An unambiguous contradiction with a current amount
+or plan comparison prompts one correction. If it persists, the journal records the discrepancy
+and the active lesson or named note uses the cited measurement. The farm still chooses its own next action.
+The farm sees up to four distinct recent watering outcomes with before and after growth and health.
+Its separate SQLite experience archive records every
 executed group treatment, rounds of account activity and its own agreement evaluations.
 Archive writes commit with the corresponding game events. Each decision retrieves
 up to three compact records scoped to that game and farm. A recall query can select

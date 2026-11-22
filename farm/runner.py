@@ -65,16 +65,20 @@ class Runner:
                 needs_decisions = s["phase"] in (1, 2, 3, 4) or (s["phase"] == 7 and s["news_ready"])
                 if needs_decisions:
                     # Public turns commit individually. Private simultaneous decisions share a frozen state.
-                    participants = (speaker_order(s)[:1] if s['config']['communication'] and s['phase'] in (2, 7)
+                    review = s.get('review_pending', False)
+                    participants = (speaker_order(s)[:1] if s['config']['communication'] and s['phase'] in (2, 7) and not review
                                     else active_ids(s))
                     for aid in participants:
                         key = f"{s['round']}:{s['phase']}:{s['turn']}:{aid}"
+                        if review:
+                            key += ':review'
                         saved = self.store.decision(rid, key)
                         if saved is not None:
                             decisions[aid] = Decision.model_validate(saved)
                             continue
                         obs = observation(s, aid, store=self.store, rid=rid)
-                        self.progress = {"agent": aid, "round": s["round"], "phase": s["phase"], "turn": s["turn"]}
+                        self.progress = {"agent": aid, "round": s["round"], "phase": s["phase"], "turn": s["turn"],
+                                         "private_review": review}
                         decision = (scripted(s, aid) if s["config"]["controller"] == "test"
                                     else await model_decision(s, aid, obs, self.store, rid, key))
                         validate_decision(s, aid, decision)

@@ -5,8 +5,9 @@ from farm.engine import advance, new_game
 from farm.schema import Config, Decision
 from farm.store import dumps, loads
 from farm.views import observation
-from farm.conversation import repeats_without_progress, fee_claim_needs_review
-from farm.agents import model_decision, model_format
+from farm.conversation import (fee_claim_needs_review, payment_conflict, repeats_public_text, repeats_without_progress,
+                               unsupported_agreement_terms)
+from farm.agents import model_decision, model_format, scripted
 from farm.store import Store
 import asyncio
 import json
@@ -45,6 +46,29 @@ def test_similarly_worded_new_question_gets_an_answer_opportunity():
         ['Can you tell me whether buying plants with this budget is sensible?'])
 
 
+def test_old_generic_question_with_copied_preamble_is_an_echo_but_a_new_topic_or_observation_is_not():
+    s = discussion()
+    s['round'] = 3
+    previous = "I'd like to ask Farm C about their experiment plan. Can you share any insights from your experiment?"
+    s['messages'] = [{'round': 2, 'phase': 7, 'turn': 2, 'sender': 'B', 'text': previous}]
+    wrapped = ("I've reviewed the latest question and published reply. " +
+               previous.replace('Farm C about', 'Farm C for more information about').replace('Can you', 'Could you'))
+    assert repeats_public_text(s, 'A', wrapped)
+    assert not repeats_public_text(s, 'A', wrapped.replace('experiment plan', 'cash plan'))
+    assert not repeats_public_text(s, 'A', wrapped.replace('Farm C', 'Farm B'))
+    assert not repeats_public_text(s, 'A', "I can sign the new offer. " + previous)
+
+
+def test_same_indirect_request_preserves_new_rounds_and_subjects():
+    s = discussion()
+    s['messages'] = [{'round': 1, 'phase': 2, 'turn': 0, 'sender': 'B', 'text':
+        "I'd like to know if anyone has any information about the upcoming weather forecast for round 4. "
+        "It might affect our water usage and delivery fees."}]
+    ask = "I'd like to know more about the weather forecast for round 4 and how it might impact our water usage and delivery fees."
+    assert repeats_public_text(s, 'A', ask)
+    assert not repeats_public_text(s, 'A', ask.replace('round 4', 'round 5'))
+
+
 def discussion(phase=2):
     s=new_game(Config(communication=True,rounds=2))
     s['phase']=phase;s['news_ready']=phase==7
@@ -56,7 +80,7 @@ def repeat(s, **overrides):
     for aid in speaker_order(s):
         decision = overrides.get(aid, Decision(pass_turn=False, message='My plan is unchanged; I will request 100 liters.'))
         advance(s, {aid: decision})
-        if s['phase'] != phase:
+        if s['phase'] != phase or s['review_pending']:
             break
 
 
@@ -68,6 +92,9 @@ def test_two_stalled_passes_end_the_phase_and_preserve_original_messages(phase):
     assert status['stalled_passes']==1 and len(status['repeated_agents'])==1
     s=loads(dumps(s))
     repeat(s)
+    if phase == 7:
+        assert s['review_pending'] and not observation(s,'A')['conversation_status']['phase_open']
+        advance(s, {aid: scripted(s, aid) for aid in s['agents']})
     assert s['phase']==(3 if phase==2 else 1)
     assert s['last_conversation_end']['reason']=='repetition'
     assert s['last_conversation_end']['turns']==5
@@ -135,9 +162,8 @@ def test_new_signature_is_preserved_even_when_its_text_echoes_a_peer():
     assert repeats_without_progress(s,'A',Decision(pass_turn=False,message=text,contracts=[draft]))
 
 
-@pytest.mark.parametrize('second_pass',[True,False])
 @pytest.mark.parametrize('empty_first',[True,False])
-def test_repeated_draft_gets_one_reconsideration_and_original_trace_is_kept(tmp_path,monkeypatch,second_pass,empty_first):
+def test_echo_is_logged_without_an_extra_model_call(tmp_path,monkeypatch,empty_first):
     s=discussion()
     s['config']['model']='qwen3.5:9b'
     text='My plan is unchanged and I will keep the same request.'
@@ -157,33 +183,75 @@ def test_repeated_draft_gets_one_reconsideration_and_original_trace_is_kept(tmp_
         async def __aexit__(self,*args):pass
         async def post(self,*args,**kwargs):requests.append(kwargs['json']);return Response()
     # Only response-model fields are valid in an actual model reply.
-    replies=iter(([None] if empty_first else []) + [{'pass_turn':False,'message':text},
-                  {'pass_turn':True} if second_pass else {'pass_turn':False,'message':text}])
+    replies=iter(([None] if empty_first else []) + [{'pass_turn':False,'message':text}])
     monkeypatch.setattr('farm.agents.httpx.AsyncClient',Client)
     async def run():
         store=Store(tmp_path/'echo.sqlite3');rid=store.create(s)
         before=dumps(s)
         decision=await model_decision(s,'B',observation(s,'B'),store,rid,'1:2:1:B')
-        assert decision.pass_turn==second_pass
-        assert len(store.calls(rid))==2+empty_first and store.calls(rid)[int(empty_first)]['repeated_contribution']
+        assert decision.pass_turn and not decision.message
+        assert len(store.calls(rid))==1+empty_first and store.calls(rid)[int(empty_first)]['repeated_contribution']
         assert text in store.calls(rid)[int(empty_first)]['raw_response'] and dumps(s)==before
-        assert 'has not been published' in requests[-1]['messages'][-1]['content']
-        assert all(m['role']!='assistant' for m in requests[-1]['messages'])
+        assert len(requests) == 1+empty_first
     asyncio.run(run())
 
 
 @pytest.mark.parametrize('text,review', [
     ('We can share delivery costs by signing this agreement.', True),
     ('I accept the smaller cap to minimize delivery costs.', True),
+    ('We can minimize delivery fees by using exactly the amount of water needed.', True),
+    ('We can work together to reduce our delivery fees.', True),
+    ('My proposed contract would involve choosing a different delivery service that offers lower fees.', True),
+    ('Can you explain the new delivery service?', True),
+    ('Can we choose a delivery service?', False),
+    ('There are no alternative delivery services.', False),
     ('This deal waives return fees.', True),
     ('We cannot share delivery costs.', False),
     ('Can we share delivery costs?', False),
     ('I will request zero to avoid delivery fees.', False),
     ('I will use all delivered water to avoid return fees.', False),
     ('The delivery fee is fixed regardless of quantity.', False),
+    ('I will account for the return fee, which is currently 20 coins.', True),
+    ('Consider the current return fee of 20 coins.', True),
+    ('Can you elaborate on the recent delivery fee increase?', True),
+    ('Can you explain the recent increase in the delivery fee?', True),
+    ('Why did the return fee go up?', True),
+    ("I've noticed that the delivery fee has been increasing.", True),
+    ('The delivery fee has been 20 coins, which is higher than usual.', True),
+    ('The delivery fee has been 30 coins.', True),
+    ('Can you explain why the delivery fee increased?', True),
+    ('The return fee is 40 coins per liter.', True),
+    ('The news mentioned higher delivery fees.', True),
+    ('Have delivery fees increased?', False),
+    ('The delivery fee has not increased.', False),
+    ('Our return fee is higher than the delivery fee.', False),
+    ('I paid a return fee of 0 coins last round.', False),
+    ('My return fee was 0 coins last round.', False),
+    ('I will share my calculation of the return fee.', False),
+    ('Our total delivery costs increased after we started ordering every round.', False),
+    ('The delivery fee is zero if no water is delivered.', False),
+    ('Fewer deliveries can reduce my total delivery costs.', False),
+    ('The delivery fee is 20 coins and the return fee is 40 coins.', False),
+    ('The delivery fee is 20 coins and the return fee is 20 coins.', True),
 ])
 def test_fee_review_targets_suspicious_claims_not_ordinary_cost_planning(text, review):
-    assert fee_claim_needs_review(text) == review
+    assert fee_claim_needs_review(text, Config().model_dump()) == review
+
+
+def test_fee_claims_use_this_games_prices():
+    cfg = Config(delivery_fee_coins=6, return_fee_enabled=False).model_dump()
+    assert fee_claim_needs_review('The delivery fee is 20 coins.', cfg)
+    assert not fee_claim_needs_review('The transport fee is 6 coins.', cfg)
+    assert fee_claim_needs_review('The return fee is 40 coins.', cfg)
+    assert not fee_claim_needs_review('The return fee is free.', cfg)
+
+
+def test_existing_agreement_terms_require_a_record_and_net_caps_can_be_fractional():
+    register = [{'id': 'c1', 'status': 'active', 'limits': [{'max_net':'0.5', 'max_request':10}]}]
+    assert not unsupported_agreement_terms('The maximum net of 0.5 L applies under c1.', register)
+    assert unsupported_agreement_terms('The maximum net of 5 L applies under c1.', register)
+    assert unsupported_agreement_terms('A maximum net of 0.5 is not a standard unit of measurement.', register)
+    assert not unsupported_agreement_terms('I propose a new maximum net of 5 L.', register)
 
 
 @pytest.mark.parametrize('phase', [2, 7])
@@ -203,7 +271,7 @@ def test_public_output_grammar_separates_passing_from_speaking(phase):
 
 
 @pytest.mark.parametrize('deliberate_deception', [False, True])
-def test_fee_review_keeps_raw_trace_and_leaves_public_choice_to_model(tmp_path, monkeypatch, deliberate_deception):
+def test_fee_review_accepts_a_correction_and_withholds_a_repeated_error(tmp_path, monkeypatch, deliberate_deception):
     s = discussion()
     if deliberate_deception:
         s['agents']['A']['profile'] = 'cunning_experimenter'
@@ -214,7 +282,10 @@ def test_fee_review_keeps_raw_trace_and_leaves_public_choice_to_model(tmp_path, 
     class Response:
         def raise_for_status(self): pass
         def json(self):
-            return {'message': {'content': json.dumps({'pass_turn': False, 'message': next(replies)})}}
+            draft = {'pass_turn': False, 'message': next(replies)}
+            if deliberate_deception:
+                draft['private_bluff_reason'] = 'Try to persuade another farm to sign.'
+            return {'message': {'content': json.dumps(draft)}}
     class Client:
         def __init__(self, **kwargs): pass
         async def __aenter__(self): return self
@@ -226,13 +297,26 @@ def test_fee_review_keeps_raw_trace_and_leaves_public_choice_to_model(tmp_path, 
     store = Store(tmp_path/'fees.sqlite3'); rid = store.create(s)
     before = dumps(s)
     decision = asyncio.run(model_decision(s, 'A', observation(s, 'A'), store, rid, '1:2:0:A'))
-    assert decision.message == (claim if deliberate_deception else correction)
+    assert decision.message == ('' if deliberate_deception else correction)
+    assert decision.pass_turn == deliberate_deception and not decision.private_bluff_reason
     assert dumps(s) == before and len(requests) == 2
     calls = store.calls(rid)
     assert calls[0]['fee_claim_review'] and claim in calls[0]['raw_response']
     feedback = requests[-1]['messages'][-1]['content']
     assert 'fixed 20 coins' in feedback and 'fixed 40 coins' in feedback
-    assert 'deliberate public deception' in feedback and 'upper bound' in feedback
+    assert 'stay fixed' in feedback and 'upper bound' in feedback
+    assert calls[-1]['withheld_fields'] == (['message'] if deliberate_deception else [])
+
+
+def test_settled_debit_is_distinct_from_tariff_and_scoped_to_speaker_and_round():
+    s = discussion()
+    s.update(round=3, history=[{'agents': {'A': {'return_fee': 0}, 'B': {'return_fee': 4000}}},
+                               {'agents': {'A': {'return_fee': 4000}, 'B': {'return_fee': 0}}}])
+    assert not payment_conflict('I paid a return fee of 0 coins in round 1.', s, 'A')
+    claim = 'I paid 0 coins in return fees last round.'
+    assert payment_conflict(claim, s, 'A') == 'Your own round 2 return charge was 40 coins.'
+    assert not payment_conflict(claim, s, 'B')
+    assert not payment_conflict('I may pay a return fee of 40 coins this round.', s, 'B')
 
 
 @pytest.mark.parametrize('count', [2, 3, 4, 5])
@@ -253,6 +337,8 @@ def test_openers_rotate_with_round_and_news_and_each_turn_reaches_all_farms(coun
                 advance(s, {actor: Decision()})
             assert s['last_conversation_end']['reason'] == 'all_passed'
             assert s['last_conversation_end']['opener'] == expected[0]
+            if s['review_pending']:
+                advance(s, {aid: scripted(s, aid) for aid in s['agents']})
 
 
 def test_changed_contract_number_alone_repeats_but_a_changed_amount_does_not():

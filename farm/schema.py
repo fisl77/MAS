@@ -3,10 +3,10 @@ from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
-RULE_VERSION = "farm-1.5"
-PROMPT_VERSION = "farm-agent-1.22"
+RULE_VERSION = "farm-1.7"
+PROMPT_VERSION = "farm-agent-1.26"
 NOTE_LENGTH = 240
 PUBLIC_MESSAGE_LIMIT = 10
 QUIET_PASS_LIMIT = 2
@@ -28,7 +28,14 @@ class Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class Config(Strict):
+class EconomySettings(Strict):
+    harvest_quality: bool = Field(default=True, strict=True)
+    delivery_fee_coins: int = Field(default=20, ge=0, strict=True)
+    return_fee_enabled: bool = Field(default=True, strict=True)
+    return_fee_coins: int = Field(default=40, ge=0, strict=True)
+
+
+class Config(EconomySettings):
     agent_count: int = Field(default=2, ge=2, le=5, strict=True)
     profiles: list[Literal["short_term", "reciprocal", "cunning_experimenter"]] = Field(default_factory=list)
     starting_coins: int = Field(default=500, ge=1, strict=True)
@@ -126,12 +133,37 @@ def working_notes(saved):
     return {key: saved[key] for key in ('goal', 'open_question', 'insight') if saved.get(key)}
 
 
+ReviewText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=NOTE_LENGTH)]
+
+
+class NotebookEdit(Strict):
+    target: str = Field(min_length=1, max_length=32)
+    title: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=48)]
+    text: ReviewText
+
+
+class RoundReview(Strict):
+    source: str = Field(min_length=1, max_length=40)
+    choice: str = Field(min_length=1, max_length=40)
+    conclusion: ReviewText
+    next_intent: ReviewText
+    long_term_goal: ReviewText | None = None
+    working_note: NotebookEdit | None = None
+
+
+class ReviewResponse(Strict):
+    review: RoundReview
+    recall_query: str = Field(default="", max_length=200)
+
+
 class Decision(Strict):
     """One bounded decision; memory and recall are always private."""
     # Old accepted decisions can contain a string. New model responses use PrivateNotes.
     memory: WorkingNotes | Annotated[str, Field(max_length=4000)] | None = None
     recall_query: str = Field(default="", max_length=200)
     planned_sowing: list[NewPlants] | None = None
+    planned_irrigation: list[Irrigation] | None = None
+    review: RoundReview | None = None
     request: int | None = Field(default=None, ge=0, strict=True)
     new_plants: list[NewPlants] = Field(default_factory=list)
     irrigation: list[Irrigation] = Field(default_factory=list)
@@ -150,6 +182,7 @@ class PrivateNotes(Strict):
 
 class PlantingPlan(PrivateNotes):
     planned_sowing: list[NewPlants] = Field(default_factory=list)
+    planned_irrigation: list[Irrigation] = Field(default_factory=list)
 
 
 class WaterRequest(PrivateNotes):

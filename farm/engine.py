@@ -9,6 +9,8 @@ from .schema import (Config, Decision, RULE_VERSION, PROMPT_VERSION,
 from .conversation import (classify_public_pass, current_progress, eligible_speakers, phase_budget,
                            retain_public_history, speaker_order)
 from .evidence import record_trial
+from .learning import check_review, apply_review
+from .knowledge import FULL_HARVEST_COINS, INITIAL_POND, MAX_HEALTH, POND_CAPACITY, return_cost
 from .water_budget import WaterBudgetError, allocation_report
 
 class PlantAvailabilityError(ValueError):
@@ -35,21 +37,22 @@ def new_game(config: Config):
     rng = random.Random(config.seed)
     s = {"config": config.model_dump(), "rule_version": RULE_VERSION, "prompt_version": PROMPT_VERSION,
          "round": 1, "phase": 1, "turn": 0, "status": "paused", "error": None,
-         "pond": F(5000), "pond_minimum": F(5000), "weather": [weather_phase(rng, x) for x in [False, True, False]],
+         "pond": F(INITIAL_POND), "pond_minimum": F(INITIAL_POND), "weather": [weather_phase(rng, x) for x in [False, True, False]],
          "rng": rng.getstate(), "last_start": None, "start": config.start_agent,
          "agents": {}, "contracts": [], "messages": [], "contract_results": [],
-         "news": {}, "news_ready": False, "history": [], "events": [],
+         "news": {}, "news_ready": False, "review_pending": False, "history": [], "events": [],
          "next_contract": 1, "eliminated_this_round": [], "ranking": [], "model_digest": None}
     for i, profile in enumerate(config.profiles):
         aid = chr(65 + i)
         s["agents"][aid] = {"id": aid, "profile": profile, "active": True, "bank": config.starting_coins * 100,
             "profit": 0, "debt": 0, "plants": [], "memory": {}, "recall_query": "",
             "request": 0, "delivered": 0, "returned": F(0), "used": F(0),
-            "sold": 0, "lost": 0, "fees": 0, "revenue": 0, "eliminated_round": None,
+            "sold": 0, "lost": 0, "fees": 0, "delivery_fee": 0, "return_fee": 0,
+            "revenue": 0, "eliminated_round": None,
             "recent_plant_results": [], "next_group": 1}
     s["public_active_agents"] = list(s["agents"])
     s["news"] = {"round": 0, "forecast": forecast(s, 1), "announcements": [],
-                 "initial_pond_liters": 5000}
+                 "initial_pond_liters": INITIAL_POND}
     return s
 
 
@@ -91,15 +94,16 @@ def eliminate(s, aid, reason):
 
 
 def charge(s, aid, cents, kind):
+    if not cents:
+        return
     a = s["agents"][aid]
     paid = min(a["bank"], cents)
     a["bank"] -= paid
     a["debt"] += cents - paid
     a["profit"] -= cents
     a["fees"] += cents
+    a[f"{kind}_fee"] += cents
     emit(s, "fee", agent_id=aid, fee_type=kind, amount=cents, paid=paid, debt=cents-paid)
-    if paid < cents:
-        eliminate(s, aid, "Unpaid fee")
 
 
 def deliver(s):
@@ -112,19 +116,13 @@ def deliver(s):
             s["last_start"] = index
             break
     order = ids[s["start"]:] + ids[:s["start"]]
-    while True:
-        requests = {a: s["agents"][a]["request"] for a in active_ids(s)}
-        assigned = allocation(requests, s["pond"], order)
-        insolvent = [a for a, amount in assigned.items() if amount > 0 and s["agents"][a]["bank"] < 2000]
-        if not insolvent:
-            break
-        for aid in insolvent:
-            eliminate(s, aid, "Unable to pay delivery fee")
+    requests = {aid: s["agents"][aid]["request"] for aid in active_ids(s)}
+    assigned = allocation(requests, s["pond"], order)
     for aid, amount in assigned.items():
         s["agents"][aid]["delivered"] = amount
         if amount:
             s["pond"] -= amount
-            charge(s, aid, 2000, "delivery")
+            charge(s, aid, s["config"]["delivery_fee_coins"] * 100, "delivery")
         emit(s, "delivery", agent_id=aid, requested=requests[aid], liters=amount)
     s["pond_minimum"] = min(s.get("pond_minimum", F(5000)), s["pond"])
 
@@ -133,7 +131,7 @@ def plant_change(growth, health, amount, new=False):
     if new:
         if amount < 2:
             return growth, 0
-        health = 20
+        health = MAX_HEALTH
     if amount < 2:
         delta, hp = 0, -5
     elif amount < 4:
@@ -144,7 +142,7 @@ def plant_change(growth, health, amount, new=False):
         delta, hp = 25, -3
     else:
         delta, hp = 0, -8
-    return min(100, growth + delta), max(0, min(20, health + hp))
+    return min(100, growth + delta), max(0, min(MAX_HEALTH, health + hp))
 
 
 def next_group(s, aid):
@@ -160,6 +158,13 @@ def validate_decision(s, aid, d: Decision):
     if not a["active"]:
         raise ValueError("Agent is inactive.")
     phase = s["phase"]
+    if s.get('review_pending'):
+        if d.model_dump(exclude_defaults=True).keys() - {'review', 'recall_query'}:
+            raise ValueError('Only the private round review and next recall query are available.')
+        check_review(s, aid, d.review)
+        return
+    if d.review is not None:
+        raise ValueError('Round review opens after the NEWS exchange.')
     if (d.message or d.contracts) and (phase not in (2, 7) or not s["config"]["communication"]):
         raise ValueError("Public communication is unavailable in this phase.")
     if d.pass_turn and (d.message or d.contracts):
@@ -169,7 +174,7 @@ def validate_decision(s, aid, d: Decision):
         raise ValueError("A private bluff reason requires a cunning farm and a public statement.")
     if phase != 3 and d.request is not None:
         raise ValueError("Water requests are only accepted in the request phase.")
-    if phase != 1 and d.planned_sowing is not None:
+    if phase != 1 and (d.planned_sowing is not None or d.planned_irrigation is not None):
         raise ValueError("A provisional sowing plan belongs to the planning phase.")
     if phase == 3 and d.request is None:
         raise ValueError("Provide a whole-liter water request.")
@@ -178,17 +183,17 @@ def validate_decision(s, aid, d: Decision):
     if phase in (2, 7) and s['config']['communication'] and (d.message.strip() or d.contracts):
         if phase_budget(s)['messages_used'].get(aid, 0) >= PUBLIC_MESSAGE_LIMIT:
             raise ValueError(f"Farm {aid} has used all {PUBLIC_MESSAGE_LIMIT} public contributions in this phase. Pass or wait for the next conversation phase.")
-    if phase == 4:
+    if phase in (1, 4):
         available = {g["id"]: g["count"] for g in a["plants"]}
         total = F(0)
-        for x in d.irrigation:
+        for x in (d.planned_irrigation or []) if phase == 1 else d.irrigation:
             if x.group_id not in available or x.count > available[x.group_id]:
                 raise PlantAvailabilityError(f"Farm {aid} requested {x.count} plants in {x.group_id}; "
                                              f"{available.get(x.group_id, 0)} still available for irrigation.")
             available[x.group_id] -= x.count
             total += x.count * water(x.water_per_plant)
         total += sum((x.count * water(x.water_per_plant) for x in d.new_plants), F(0))
-        if total > a["delivered"]:
+        if phase == 4 and total > a["delivered"]:
             raise WaterBudgetError(allocation_report(a['delivered'], d.new_plants, d.irrigation))
     if d.contracts:
         from .contracts import apply_contract_action
@@ -204,6 +209,8 @@ def apply_memory(s, aid, d):
                                          'statement': d.message, 'intended_benefit': d.private_bluff_reason}
     if d.planned_sowing is not None:
         agent['planned_sowing'] = [entry.model_dump() for entry in d.planned_sowing]
+    if d.planned_irrigation is not None:
+        agent['planned_irrigation'] = [entry.model_dump() for entry in d.planned_irrigation]
     if isinstance(d.memory, str):
         agent["memory"] = d.memory  # Replay historical accepted decisions verbatim.
     elif d.memory is not None:
@@ -256,13 +263,19 @@ def grow(s):
                 a["lost"] += g["count"]
                 outcome = "died"
             elif growth == 100:
-                revenue = hp * 100 * g["count"]
-                a["bank"] += revenue
+                price = FULL_HARVEST_COINS * 100
+                if s["config"]["harvest_quality"]:
+                    price = price * hp // MAX_HEALTH
+                revenue = price * g["count"]
+                repaid = min(a["debt"], revenue)
+                a["debt"] -= repaid
+                a["bank"] += revenue - repaid
                 a["profit"] += revenue
                 a["revenue"] += revenue
                 a["sold"] += g["count"]
                 outcome = "sold"
-                emit(s, "sale", agent_id=aid, group_id=g["id"], count=g["count"], revenue=revenue)
+                emit(s, "sale", agent_id=aid, group_id=g["id"], count=g["count"], health=hp,
+                     price_per_plant=price, revenue=revenue, debt_repaid=repaid)
             else:
                 alive.append(g)
                 outcome = "growing"
@@ -281,17 +294,19 @@ def settle(s):
         s["pond"] += a["returned"]
         if a["returned"] > 0:
             emit(s, "return", agent_id=aid, liters=a["returned"])
-            charge(s, aid, 4000, "return")
+            charge(s, aid, return_cost(s["config"]) * 100, "return")
+        if a["bank"] - a["debt"] <= 0:
+            eliminate(s, aid, "Nonpositive net balance at round settlement")
     evaluate_contracts(s)
     rainy = s["weather"][0]["rainy"]
     rain = F(1000) + s["pond"] / 1000 if rainy else F(0)
-    overflow = max(F(0), s["pond"] + rain - 50000)
-    s["pond"] = min(F(50000), s["pond"] + rain)
+    overflow = max(F(0), s["pond"] + rain - POND_CAPACITY)
+    s["pond"] = min(F(POND_CAPACITY), s["pond"] + rain)
     emit(s, "weather", weather="rain" if rainy else "dry", rain=rain, overflow=overflow, pond=s["pond"])
     s["history"].append({"round": s["round"], "pond": s["pond"], "rain": rain, "overflow": overflow,
         "weather": "rain" if rainy else "dry", "active": len(active_ids(s)),
         "social_profit": sum(a["profit"] for a in s["agents"].values()),
-        "agents": {aid: {k: a[k] for k in ("profit", "bank", "debt", "request", "delivered", "returned", "used", "sold", "lost", "fees", "revenue", "active")}
+        "agents": {aid: {k: a[k] for k in ("profit", "bank", "debt", "request", "delivered", "returned", "used", "sold", "lost", "fees", "delivery_fee", "return_fee", "revenue", "active")}
                    for aid, a in s["agents"].items()}})
     s["weather"][0]["remaining"] -= 1
     if s["weather"][0]["remaining"] == 0:
@@ -387,14 +402,20 @@ def advance(s, decisions=None):
     if phase == 7 and not s["news_ready"]:
         publish_news(s)
         return
-    public = phase in (2, 7) and s['config']['communication']
+    review = bool(s.get('review_pending'))
+    public = phase in (2, 7) and s['config']['communication'] and not review
+    if review and set(decisions) != set(active_ids(s)):
+        raise ValueError('Provide one private round review for every surviving farm.')
     if public and list(decisions) != speaker_order(s)[:1]:
         raise ValueError("Provide exactly the current public speaker's decision.")
     for aid, d in decisions.items():
         validate_decision(s, aid, d)
     for aid, d in decisions.items():
         apply_memory(s, aid, d)
-    if public:
+    if review:
+        for aid, d in decisions.items():
+            emit(s, 'round_review', **apply_review(s, aid, d.review))
+    elif public:
         reason = public_turn(s, decisions)
         if reason is None:
             return
@@ -424,6 +445,10 @@ def advance(s, decisions=None):
         settle(s)
     s["turn"] = 0
     if phase == 7:
+        if not review and active_ids(s):
+            s['review_pending'] = True
+            return
+        s['review_pending'] = False
         if s["round"] >= s["config"]["rounds"]:
             finish(s)
             return
@@ -433,7 +458,8 @@ def advance(s, decisions=None):
         s["eliminated_this_round"] = []
         for a in s["agents"].values():
             a.pop('planned_sowing', None)
-            for k in ("request", "delivered", "sold", "lost", "fees", "revenue"):
+            a.pop('planned_irrigation', None)
+            for k in ("request", "delivered", "sold", "lost", "fees", "delivery_fee", "return_fee", "revenue"):
                 a[k] = 0
             for k in ("used", "returned"):
                 a[k] = F(0)

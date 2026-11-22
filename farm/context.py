@@ -5,33 +5,24 @@ from .conversation import pass_key
 from .schema import NOTE_LENGTH
 
 
-SYSTEM = f"""You run one farm. Maximize your cumulative sale revenue minus fees and stay solvent.
-Starting capital is separate from profit. Accounts use cents (100 = one coin).
-Positive delivery costs 20 coins before harvest. Returning any unused water costs another 40.
-Each fee is charged to that farm in that round. Agreement limits leave these fees payable.
-Shared caps cannot pool deliveries or waive fees. An empty farm may order water for sowing today.
-Farms cannot share fees, transfer resources or act for others. The end round and pond level are hidden.
-Rain adds water only to the pond at round end. Dry means no rain inflow. Neither waters plants.
-Orders are for this round only. Signed agreements are voluntary; breaches are recorded without extra fees.
-Trust your own measured watering results over conflicting notes or claims. A dose that only caused death
-in your trials is evidence to change treatment. Official NEWS reports public game outcomes.
-Public statements, including quotations in older_discussion, can be false. Attribute them to their speakers.
-Your private notes hold your profile's plan, open_question and insight ({NOTE_LENGTH} characters each).
-Update changed notes. An empty open_question closes it. For a change optionally cite memory.based_on:
-recall:1, plant:1, message:1, direct:1 or result:1 (one-based row), a visible contract ID, accounts or news.
-Write future tests as plans. For measured plant outcomes use [[trial]] as a sentence.
-Keep peer claims attributed and hypotheses tentative.
-Recalled claims are unverified speaker statements. Contract records show signatures. Plant growth/health pairs are your own [before,after].
-For a specific experience on your NEXT decision, set recall_query to a measured dose, real group or agreement ID,
-outcome, or round and topic (fees, growth or agreements).
-Omit it for phase-relevant recall. Missing history means it was not selected. Tables use columns and rows.
-Only a valid action executes. Return a JSON object matching response_schema."""
+SYSTEM = f"""Run your farm for profit and survival. Follow observation.game_rules. All monetary figures are in coins.
+Farms cannot transfer water, share fees, waive charges by agreement or act for others. Breaches are recorded without fines.
+The end round and live pond level are hidden. Official NEWS is public. Attribute all peer claims, including recalled
+quotations. Trust your own measured evidence. A dose that only caused death is reason to try a different treatment.
+Keep your plan, open_question and insight private ({NOTE_LENGTH} characters each). Update changed notes.
+Clear an answered open_question with an empty string. Optional memory.based_on citations: recall:1, plant:1,
+message:1, direct:1, result:1 (one-based), visible contract ID, accounts or news. Use [[trial]] for measured
+plant results. Mark hypotheses and future tests as such. Plant growth/health pairs give your [before,after].
+For the next decision, recall_query accepts a measured dose, real group or agreement ID, outcome, or round
+and topic. Search past private revisions with "archive" plus a word, slot or round. Omit for phase-relevant recall. Tables use columns and rows.
+Return valid JSON matching response_schema."""
+
 
 PLANNING_GUIDE = """Plan today's water for existing plants and intended sowing, even on an empty farm.
 The order in EVERY round is planning, discussion, water order, farm work, growth/automatic sale,
 returns/weather, NEWS. Sowing starts in round 1, phase 4. Compare tested doses by numeric growth,
 health, losses and costs. Revise failed treatments and keep open questions private.
-Use planned_sowing to record today's provisional counts and liters per plant, or [] to skip sowing.
+Record BOTH planned_sowing and planned_irrigation by real group ID, count and dose. Unlisted plants get zero. These are provisional choices.
 Choose what to test from your own evidence. Budget future deliveries and fees through automatic harvest."""
 
 TRIAL_GUIDE = """For an unknown dose, start with 1–5 comparable plants per dose. Identical seedlings given
@@ -42,14 +33,12 @@ Scale up production when your farm has seen healthy growth at that dose in multi
 plant stage and can sustain the crop with future water and fees."""
 
 REQUEST_GUIDE = """Order a nonnegative whole number of liters now for ALL existing plants and intended sowing.
-The initial pond held 5000 L. Allocation rotates one liter at a time, limited by requests, pond and affordability.
 Use the actual delivery in phase 4. A farm with no current plants can still order for new ones.
 There is one delivery today. You cannot order extra in phase 4 or save water for next round.
 Calculate today's order from existing irrigation plus the sum of count × dose for planned sowing.
 For exploration budget only 1–5 plants per test dose. Round the total up to whole liters as needed."""
 
-CARE_GUIDE = """Plants are free. Inspect your own inventory by group_id, growth (0–100) and health (0–20).
-At 100 growth, living plants sell automatically for their health in coins. Dead plants yield nothing.
+CARE_GUIDE = """Plants are free. Inspect your own inventory by group_id, growth and health.
 There is no manual harvest or separate inspection action. Sow with new_plants; each entry waters EVERY
 new plant in its count immediately. Water existing groups with irrigation using a real group_id and count.
 Use decimal strings with up to three places. Split a group across different doses, including count=1.
@@ -66,29 +55,22 @@ PRIVATE_DISCUSSION = """Reflect privately or pass. There are up to ten private s
 the phase. No public messages or agreement actions are available."""
 
 CONVERSATION_GUIDE = """PUBLIC CONVERSATION SKILLS
-Use this exchange to learn, test your understanding or influence others for your own benefit. Choose the topic yourself.
-Plant care, trial design, strategy, costs, trust and negotiation are equally available topics, not a checklist.
-Seek useful advice, compare observations, question claims, coordinate trials or negotiate a benefit as you see fit.
-Decide what sharing, withholding or requesting information gains you. You need not share knowledge or cooperate.
-Public deception remains a profile-dependent choice; keep true observations and intended deceptions distinct privately.
-Address a peer's actual point: answer, challenge its premise, ask for clarification, bargain or decline explicitly.
-Consider asking what was tested and how growth and health changed. Separate measurements, hypotheses and peer claims.
-Without trial results, you can discuss uncertainties and planned tests. Distinguish plans from measurements privately.
-A useful reply needs no agreement action: contracts=[] is valid. Use a contract only when its supported terms serve
-your chosen goal. Do not turn a question about cultivation into a water-cap proposal by default.
-Write one focused contribution in 1–3 short sentences, at most 600 characters. Do not recap memory or reveal your profile.
-Do not repeat answered questions, copy peers or restate your position. Acknowledge briefly once.
-Before passing, consider whether a reply, a question about your uncertainty or a changed observation is useful.
-Passing remains valid when you judge the exchange unhelpful or choose to withhold a response.
-You speak one at a time. Your turn follows the last published contribution. Passing is free and reversible.
-The phase ends when all eligible speakers pass consecutively, after two full cycles without progress, or at ten
-contributions per farm. A followup question is a speaker's claim; its answer status is unverified."""
+Choose what benefits your farm: learn, test a claim, influence others, discuss costs, care, trust or negotiate.
+Answer a peer's question with a specific observation, decision or uncertainty. Use [[trial]] to share an
+executed treatment. Name a future test as a plan. Check a question's premise against game_rules and NEWS.
+You need not share knowledge or cooperate. Deception follows your profile. Keep true private observations distinct.
+Use contracts=[] for ordinary speech. Offer an agreement only if its terms advance your goal.
+Write 1–3 short sentences, at most 600 characters. Keep memory and profile private. Avoid repeated questions,
+copied positions and recaps. Check exchange for the latest question, your last position and a possible published reply.
+Pass when the exchange has no new point. Repeating another farm's question counts as silence.
+Speaking turns are sequential. Passing is free and reversible. All eligible speakers passing consecutively,
+two full cycles without progress or exhausted budgets end the phase. A followup question may already be answered."""
 
 
 AGREEMENT_REFERENCE = """AGREEMENT HOW-TO: contracts=[] for ordinary speech. To propose, key limits once by
 participant including yourself, set start/end rounds and max_request or max_net. Proposing signs; all must sign
 to activate. Accept/reject an open ID. Cancel active participation from next round. Replace using the same
-participants and fresh signatures. Caps are voluntary upper bounds. Check the register for status and terms."""
+participants and fresh signatures. Voluntary caps cover farm totals only. Fees and per-plant doses cannot be terms."""
 
 
 class ContextBudgetError(ValueError):
@@ -192,7 +174,8 @@ def fit_context(system, context, config, repair=None):
             omitted_response = True
         elif not packed:
             for parent, key, label in ((obs, 'agreements', 'agreements'), (own, 'plants', 'own_farm.plants'),
-                                       (own, 'planned_sowing', 'own_farm.planned_sowing')):
+                                       (own, 'planned_sowing', 'own_farm.planned_sowing'),
+                                       (own, 'planned_irrigation', 'own_farm.planned_irrigation')):
                 if key in parent:
                     result = _pack_records(parent[key])
                     if result is not parent[key]:
