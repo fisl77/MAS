@@ -3,6 +3,7 @@ import json
 import os
 import time
 from copy import deepcopy
+from math import floor
 
 import httpx
 from pydantic import ValidationError
@@ -11,20 +12,22 @@ from .engine import validate_decision, PlantAvailabilityError
 from .evidence import seedling_trial_hint
 from .contracts import ProposalTermsError
 from .knowledge import fee_report, fee_rules, return_cost
-from .schema import Decision, NOTE_LENGTH, ReviewResponse, response_model
-from .learning import fact_text, model_money, note_targets, plan_amounts, review_choices, review_conflicts, review_facts, water_quote
+from .schema import Decision, Irrigation, NewPlants, NOTE_LENGTH, ReviewResponse, response_model, water
+from .learning import fact_text, model_money, note_targets, review_choices, review_conflicts, review_facts, water_quote
 from .store import display
 from .views import observation as current_observation
 from .context import (SYSTEM, PLANNING_GUIDE, TRIAL_GUIDE, REQUEST_GUIDE, CARE_GUIDE, REFLECTION_GUIDE,
                       PRIVATE_DISCUSSION, CONVERSATION_GUIDE, AGREEMENT_REFERENCE,
                       ContextBudgetError, fit_context, schema_constraints)
-from .water_budget import WaterBudgetError, dose_pattern, liters_text, WATER_BUDGET_GUIDE
+from .water_budget import (WaterBudgetError, allocation_report, dose_pattern, exact_fit_edits, liters_text,
+                           WATER_BUDGET_GUIDE)
 from .budget_repair import FarmBudgetDraft
 from .reporting import (FEE_TOKEN, PROFILE_NOTES, REFLECTION_NOTES, REPORT_TOKEN, WATER_TOKEN,
                         grounded_text, planning_choices, trial_report, water_report)
-from .memory import shown_sources
+from .memory import shown_sources, source_status
 from .conversation import (changes_contracts, repeats_public_text, fee_claim_needs_review, focus_public_turn,
-                           is_spoken_pass, payment_conflict, unsupported_agreement_terms, unsupported_water_rule)
+                           is_spoken_pass, payment_conflict, phase_budget, unsupported_agreement_terms,
+                           unsupported_water_rule)
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
 PROFILES = {
@@ -244,6 +247,14 @@ def model_format(s, aid, *, repair_terms=False):
         if 'private_bluff_reason' in passing['properties']:
             passing['properties']['private_bluff_reason']['const'] = ''
         schema = {'$defs': schema['$defs'], 'oneOf': [contribute, passing]}
+    if s['phase'] == 3:
+        groups = [g['id'] for g in s['agents'][aid]['plants']]
+        if groups:
+            schema['$defs']['Irrigation']['properties']['group_id']['enum'] = groups
+        else:
+            for branch in schema['properties']['planned_irrigation']['anyOf']:
+                if branch.get('type') == 'array':
+                    branch['maxItems'] = 0
     if s["phase"] == 4:
         for name in ('NewPlants', 'Irrigation'):
             schema['$defs'][name]['properties']['water_per_plant']['pattern'] = dose_pattern(s['agents'][aid]['delivered'])
@@ -336,7 +347,7 @@ def prompt_messages(s, aid, observation, repair=None, controller=None, repair_te
     if s.get('review_pending'):
         schema = model_format(s, aid)
         own = obs['own_farm']
-        own_view = {k: own[k] for k in ('memory', 'learning', 'private_archive', 'effective_voluntary_caps',
+        own_view = {k: own[k] for k in ('memory', 'memory_provenance', 'learning', 'private_archive', 'effective_voluntary_caps',
                     'last_evaluated_commitment') if k in own}
         facts = {ref: fact_text(ref, record) for ref, record in obs['private_round_records'].items()}
         review_obs = {'private_round_records': facts, 'news': obs['news'],
@@ -345,7 +356,8 @@ def prompt_messages(s, aid, observation, repair=None, controller=None, repair_te
         system = (f"You are Farm {aid} ({profile}) writing your own private notebook after round {s['round']}. "
                   "Compare intended and actual water, fees, income, plant changes and own commitments. "
                   "Read the comparison and figures in your selected record. Mark inferred causes as hypotheses. "
-                  "All money is in coins. Public statements are unverified. Use your own words.")
+                  "Money is in coins. The selected record is observed. Your explanation is a hypothesis. "
+                  "A peer claim cannot confirm a lesson.")
         guide = ("Choose a source from private_round_records. The notebook quotes this measured record for you. "
                  "Write the implication or a question in your own words. Use [[record]] to copy the exact finding. "
                  "Save a useful lesson, test a question, update an "
@@ -381,6 +393,9 @@ def prompt_messages(s, aid, observation, repair=None, controller=None, repair_te
                 + "Your fixed profile: " + PROFILES[s['agents'][aid]['profile']]]
     if not public:
         obs.pop('conversation_status', None)
+    if phase in (1, 3, 4):
+        for key in ('messages', 'followup_messages', 'older_discussion'):
+            obs.pop(key, None)
     if phase == 1:
         sections.extend([PLANNING_GUIDE, TRIAL_GUIDE])
         task = ("Choose today's provisional sowing batches in planned_sowing and existing group doses in planned_irrigation. Base the doses on your own "
@@ -394,12 +409,13 @@ def prompt_messages(s, aid, observation, repair=None, controller=None, repair_te
     elif phase == 3:
         sections.append(REQUEST_GUIDE)
         task = ("Choose a whole-liter order. planned_total_liters includes both your chosen treatments. "
-                "order_if_following_plan shows the fees under full delivery. You may change the plan. "
+                "Compare whole_order_choices when shown. To revise the plan, give both planned_sowing "
+                "and planned_irrigation, including any unchanged rows. Omit both to keep it. "
                 "max_request limits an order; max_net limits actual use. You decide whether to honor each promise.")
     elif phase == 4:
         sections.extend([CARE_GUIDE, TRIAL_GUIDE, WATER_BUDGET_GUIDE])
         task = (f"You received {liters_text(s['agents'][aid]['delivered'])} L. Choose today's actual treatments. "
-                "Compare actual_delivery_against_plan and your two planned lists. Adjust either to fit. "
+                "Use your plan when it fits and is still useful. Compare your combined actual use with delivery. "
                 "For a trial, use 1–5 comparable plants per distinct dose in the plan. "
                 "If none of your intended treatments fit, you may leave new_plants empty.")
     else:
@@ -407,6 +423,8 @@ def prompt_messages(s, aid, observation, repair=None, controller=None, repair_te
             sections.append(REFLECTION_GUIDE)
         if public:
             sections.append(f"Earliest new agreement start_round: {s['round'] + (phase == 7)}.")
+            if phase == 7:
+                sections.append("Farm work and fees for this round are settled. Any new order is for a later round.")
             focus_public_turn(s, aid, obs)
             sections.append(f"Optional whole-sentence reports. {FEE_TOKEN}: one game supplier, fixed all rounds, "
                             f"{s['config']['delivery_fee_coins']} coins per positive delivery, "
@@ -424,6 +442,9 @@ def prompt_messages(s, aid, observation, repair=None, controller=None, repair_te
                 task = (f"Farm {aid}, it is your turn to speak to Farm {last[0]['sender']}. "
                         "Consider the latest question, any published reply and your previous position. "
                         "What is your answer, objection, counteroffer or question? You can pass.")
+            elif aid in phase_budget(s).get('last_turn_by_agent', {}):
+                task = (f"Farm {aid}, you have no new message to answer. Pass unless you have a specific new "
+                        "question, observation or agreement action.")
             else:
                 task = (f"Farm {aid}, you open the conversation. What do you want to know, or what is worth "
                         "telling the others today? You can pass.")
@@ -574,6 +595,54 @@ def _needs_direct_retry(cfg, result, raw):
     return cfg['model'] == 'qwen3.5:9b' and result.get('done_reason') == 'length' and not raw.strip()
 
 
+def return_fee_check(s, aid, decision):
+    """Show what the agent would actually pay for its draft before executing it."""
+    agent = s['agents'][aid]
+    config = s['config']
+    if not return_cost(config):
+        return None, ''
+    ordering = s['phase'] == 3
+    if ordering:
+        if decision.planned_sowing is None and 'planned_sowing' not in agent:
+            return None, ''
+        sowing = decision.planned_sowing
+        irrigation = decision.planned_irrigation
+        if sowing is None:
+            sowing = [NewPlants.model_validate(row) for row in agent.get('planned_sowing', [])]
+            irrigation = [Irrigation.model_validate(row) for row in agent.get('planned_irrigation', [])]
+        liters = decision.request
+    else:
+        sowing, irrigation = decision.new_plants, decision.irrigation
+        liters = agent['delivered']
+    draft = allocation_report(liters, sowing, irrigation)
+    total = water(draft['total_liters'])
+    quote = water_quote(config, liters, total)
+    if not quote['return_fee_coins']:
+        return None, ''
+    where = f"Your provisional order of {liters} L, if delivered in full," if ordering else f"You actually received {liters} L. This draft"
+    feedback = (f"{where} uses {quote['planned_use_liters']} L across both lists and leaves {quote['unused_liters']} L. "
+                f"That return costs {quote['return_fee_coins']} coins even if tiny. "
+                f"Delivery fee: {quote['delivery_fee_coins']} coins. ")
+    trials = agent.get('cultivation_trials', [])
+    if ordering:
+        lower = floor(total)
+        trim = liters_text(total - lower)
+        feedback += (f"Ordering {lower} L and using it all would avoid the return fee. Reduce the planned total by {trim} L "
+                     "for that choice. Order 0 and defer if that fits your strategy. To change the plan, return both lists. ")
+        feedback += "In the edits, new_plants means planned_sowing and irrigation means planned_irrigation. "
+        lower_edits = exact_fit_edits(draft, lower, trials)
+        if lower_edits:
+            feedback += f"Optional edit to fit {lower} L: {json.dumps(lower_edits[0])}. "
+    else:
+        feedback += "Delivery is already charged. Choose your final new_plants and irrigation lists. "
+    options = exact_fit_edits(draft, liters, trials)
+    if options:
+        feedback += "Optional edits to the draft rows that use the full amount: " + json.dumps(options) + '. '
+    feedback += ("Use an exact fit only if useful for the plants. A suggested dose is arithmetic, "
+                 "not a guarantee of the outcome. You can keep a deliberate return and pay the fee.")
+    return quote, feedback
+
+
 async def model_decision(s, aid, obs, store, rid, key):
     messages = prompt_messages(s, aid, obs)
     cfg = s["config"]
@@ -584,7 +653,7 @@ async def model_decision(s, aid, obs, store, rid, key):
     report_reviewed = False
     undeclared_claim_reviewed = False
     direct_retry = False
-    public_rule_reviewed = order_reviewed = measurement_reviewed = False
+    public_rule_reviewed = water_reviewed = measurement_reviewed = False
     invalid_responses = 0
     repair_terms = False
     for attempt in range(6):  # Three format attempts and at most one review per advisory.
@@ -599,6 +668,8 @@ async def model_decision(s, aid, obs, store, rid, key):
         error = None
         output_truncated = False
         water_budget_report = None
+        return_quote = None
+        return_feedback = ''
         plant_issue = False
         repeated_contribution = False
         withhold_public = False
@@ -625,6 +696,8 @@ async def model_decision(s, aid, obs, store, rid, key):
                 planning=None if review else planning_choices(s, aid), plan_required=s['phase'] == 1,
                 can_keep=s['round'] >= 2 and bool(current_goal(s, aid))).model_dump())
             validate_decision(s, aid, decision)
+            if s['phase'] in (3, 4):
+                return_quote, return_feedback = return_fee_check(s, aid, decision)
             if review:
                 conflicts = review_conflicts(decision.review, obs['private_round_records'])
             if decision.memory is not None:
@@ -635,7 +708,7 @@ async def model_decision(s, aid, obs, store, rid, key):
                         uncited = ref
                         decision.memory.based_on = None
                     else:
-                        decision.note_evidence = {'ref': ref, 'record': source}
+                        decision.note_evidence = {'ref': ref, 'record': source, 'evidence_status': source_status(ref, source)}
                 for field, value in decision.memory.model_dump(exclude_none=True, exclude={'based_on'}).items():
                     checked = grounded_text(value, report, NOTE_LENGTH)
                     if checked is None:
@@ -703,6 +776,7 @@ async def model_decision(s, aid, obs, store, rid, key):
             "review_measurement_conflicts": conflicts or None,
             "withheld_fields": sorted(set((unsupported if report_reviewed else []) + (['message'] if withhold_public else []))),
             "water_budget_report": water_budget_report,
+            "water_return_quote": return_quote,
             "prompt_tokens": response_data.get("prompt_eval_count", 0),
             "completion_tokens": response_data.get("eval_count", 0)})
         if error is None:
@@ -749,17 +823,10 @@ async def model_decision(s, aid, obs, store, rid, key):
                 messages = prompt_messages(s, aid, obs, repair=[{'role': 'user', 'content': ' '.join(feedback)}],
                                            repair_terms=repair_terms)
                 continue
-            if s['phase'] == 3 and not order_reviewed and 'planned_sowing' in s['agents'][aid]:
-                quote = water_quote(cfg, decision.request, sum(plan_amounts(s['agents'][aid])))
-                if quote['return_fee_coins']:
-                    order_reviewed = True
-                    feedback = (f"Your provisional order of {decision.request} L, delivered in full, leaves "
-                                f"{quote['unused_liters']} L for return under your plan of {quote['planned_use_liters']} L. "
-                                f"The return would cost {quote['return_fee_coins']} coins, besides the delivery fee "
-                                f"of {quote['delivery_fee_coins']} coins. You can confirm this order, change it, or "
-                                "plan different treatments. Choose your final request.")
-                    messages = prompt_messages(s, aid, obs, repair=[{'role': 'user', 'content': feedback}])
-                    continue
+            if return_quote and not water_reviewed:
+                water_reviewed = True
+                messages = prompt_messages(s, aid, obs, repair=[{'role': 'user', 'content': return_feedback}])
+                continue
             return decision
         if s['phase'] == 4 and (water_budget_report is not None or plant_issue):
             return await repair_farm_budget(s, aid, obs, decision, store, rid, key)

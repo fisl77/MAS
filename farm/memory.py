@@ -20,6 +20,30 @@ CONTRACT_FIELDS = ('id', 'version', 'participants', 'limits', 'start_round', 'en
 PEER = re.compile(r'(?i:\bfarm\s+([a-e])\b)|\b([A-E])(?=[:,]|\s+(?i:said|claimed|offered|signed|promised))')
 CID = re.compile(r'\bc\d+\b', re.I)
 DOSE = re.compile(r'(?<![\w.])(\d+(?:[.,]\d+)?)\s*(?:l\b|lit[er]+s?\b)', re.I)
+ASKS_FOR_CLAIM = re.compile(r'\b(?:said|say|told|claim\w*|promise\w*|statement|rumou?r)\b', re.I)
+
+
+def source_status(ref, record):
+    if record.get('source_type', '').startswith('unverified_') or record.get('kind') == 'claim':
+        return 'unverified_claim'
+    if ref in ('news', 'rules') or CID.fullmatch(ref) or record.get('kind') in ('published_withdrawal', 'contract_record'):
+        return 'official'
+    if ref == 'accounts' or ref.startswith(('plant:', 'result:')) or record.get('kind') in ('plant', 'accounts', 'agreement'):
+        return 'observed'
+    return 'unverified_claim'
+
+
+def note_provenance(field, evidence=None):
+    source = evidence or {}
+    status = {'goal': 'plan', 'open_question': 'question'}.get(field, 'hypothesis')
+    origin = (source.get('evidence_status') or source_status(source['ref'], source['record'])) if source else None
+    if field == 'insight' and origin == 'unverified_claim':
+        status = origin
+    provenance = {'status': status}
+    if source:
+        provenance.update(source=source['ref'], source_status=origin)
+        provenance.update({key: source['record'][key] for key in ('sender', 'round', 'phase', 'turn') if key in source['record']})
+    return provenance
 
 
 def peers_in(text):
@@ -69,7 +93,7 @@ def public_matches(db, rid, aid, obs, text, *, explicit=False):
     slots = ','.join('?' for _ in keys)
     rounds = re.findall(r'\bround\s+#?(\d+)\b', text, re.I) if explicit else []
     round_filter = ' AND round=?' if rounds else ''
-    asks_claim = re.search(r'\b(?:said|say|told|claim\w*|promise\w*|statement)\b', text, re.I)
+    asks_claim = ASKS_FOR_CLAIM.search(text)
     official_first = not asks_claim and (ids or re.search(r'\bsign\w*|\bcontract|\bagreement', text, re.I))
     preferred = 's:%' if official_first else 'm:%'
     withdrawal = re.search(r'\b(?:net|withdr\w*|used|honou?r\w*|compli\w*|breach\w*)\b', text, re.I)
@@ -110,6 +134,13 @@ def decision_recall(db, rid, aid, obs, query, turn_text='', public=False):
     """Order by an explicit lookup, the current question, the farm's plan and finally phase."""
     own = obs['own_farm']
     limit = 1 if public else 3
+    physical_decision = obs['phase'] in (1, 3, 4)
+
+    def social_records(text, *, explicit=False):
+        rows = public_matches(db, rid, aid, obs, text, explicit=explicit)
+        if physical_decision and not (explicit and ASKS_FOR_CLAIM.search(text)):
+            return [row for row in rows if row['kind'] != 'claim']
+        return rows
 
     def measured(text):
         saved = recall_experiences(db, rid, aid, obs, text)
@@ -139,11 +170,12 @@ def decision_recall(db, rid, aid, obs, query, turn_text='', public=False):
         return fresh + saved
 
     if query.strip():
-        social = public_matches(db, rid, aid, obs, query, explicit=True)
+        social = social_records(query, explicit=True)
         facts = measured(query)
         personal_result = re.search(r'\b(?:my|our|own)\b', query, re.I) or not peers_in(query) and re.search(
             r'\b(?:met|breach\w*|compli\w*)\b', query, re.I)
-        result = facts + social if personal_result else social + facts
+        wants_measurements = physical_decision and not ASKS_FOR_CLAIM.search(query)
+        result = facts + social if personal_result or wants_measurements else social + facts
         return result[:limit]
     notes = own['memory']
     targets = list(dict.fromkeys(x['water_per_plant'] for x in own.get('planned_sowing', [])))
@@ -159,7 +191,7 @@ def decision_recall(db, rid, aid, obs, query, turn_text='', public=False):
     for text in (turn_text, notes.get('open_question', ''), notes.get('goal', '')):
         if not text:
             continue
-        social = public_matches(db, rid, aid, obs, text)
+        social = social_records(text)
         if not peers_in(text) and re.search(r'\b(?:met|breach\w*|compli\w*|honou?r\w*|fulfill\w*)\b', text, re.I):
             if include(measured(text)[:1]):
                 return list(candidates.values())
@@ -213,4 +245,6 @@ def shown_sources(obs):
     refs['accounts'] = {k: own[k] for k in ('id', 'bank', 'debt', 'net_balance', 'profit', 'fees',
                                             'delivery_fee', 'return_fee', 'revenue', 'delivered', 'returned') if k in own}
     refs['news'] = obs['news']
+    if 'game_rules' in obs:
+        refs['rules'] = obs['game_rules']
     return refs

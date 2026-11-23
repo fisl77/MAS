@@ -61,6 +61,11 @@ function overview() {
   const {state:s,metrics:m,execution:e}=data;
   return `${meta(s)}<div class="metric-grid">${metric('Shared pond',number(s.pond,1),'liters',`${number(s.pond/500,1)}% of 50,000 L capacity`,true)}${metric('Social profit',coins(m.social_profit),'coins','Includes eliminated farms')}${metric('Active farms',`${m.active_agents} / ${s.config.agent_count}`,'farms','Survival through the current phase')}${metric('Model activity',number(e.calls),'calls',`${number(e.seconds,1)} s · ${number(e.tokens)} tokens`)}</div><div class="overview-grid"><section class="panel"><div class="panel-head"><div><h3>The shared resource</h3><p>Actual pond volume · researcher only</p></div><span class="legend">Water available</span></div>${chart(s.history)}<div class="chart-caption"><span>Minimum: ${number(m.minimum_pond,1)} L</span><span>Exact fractions retained in exports</span></div></section><section class="panel"><div class="panel-head"><div><h3>Seven days ahead</h3><p>The same forecast every farm receives</p></div><span>☁</span></div>${weather(s)}<p class="rule-note">Rain enters the pond after returns and settlement. Only this seven-day window is visible to agents.</p></section></div><div class="section-heading"><h2>Independent farms</h2><span class="subtle">A closer look at the individual outcomes</span></div><div class="farm-grid">${farms(s)}</div><section class="panel" style="margin-top:20px"><div class="panel-head"><div><h3>The economic outcome</h3><p>Cumulative social profit · includes eliminated farms</p></div><span class="legend">Coins earned, net of fees</span></div>${chart(s.history,"social_profit",true)}</section><div class="summary-grid"><section class="panel"><div class="panel-head"><h3>The public record</h3><span class="subtle">Official NEWS</span></div>${newsPanel(s)}</section><section class="panel"><div class="panel-head"><h3>Cooperation, measured</h3><span class="subtle">Formal agreements</span></div>${table(['Measure','Result'],[row(['Accepted agreements',m.accepted_agreements]),row(['Group compliance',m.agreement_rates.group.rate===null?'Not applicable':`${number(m.agreement_rates.group.rate*100,1)}%`]),row(['Self-commitment compliance',m.agreement_rates.self.rate===null?'Not applicable':`${number(m.agreement_rates.self.rate*100,1)}%`]),row(['Rounds without agreement',m.rounds_without_agreement])])}<p class="subtle" style="margin:15px 0 0">No agreement is neither cooperation nor a breach.</p></section></div>${s.status==='completed'?`<div class="section-heading"><h2>Final ranking</h2></div><section class="panel">${table(['Farm','Profit · coins','Status','Result'],s.ranking.map(x=>row([`Farm ${x.agent_id}`,coins(x.score),x.active?'Active':'Eliminated',x.winner?badge('WINNER'):'—'])))}${s.ranking.some(x=>x.winner)?'': '<p class="subtle">No winner: every farm was eliminated.</p>'}</section>`:''}<div class="section-heading"><h2>Research exports</h2></div>${downloads()}`;
 }
+const memoryLabels = {official:'Official record', observed:'Measured observation', hypothesis:'Hypothesis',
+  unverified_claim:'Unverified claim', plan:'Plan', question:'Open question'};
+function memoryLabel(status) {
+  return escape(memoryLabels[status] || 'Hypothesis');
+}
 function roundReviewPanel(review) {
   if (!review) return '';
   const evidence = review.evidence;
@@ -69,33 +74,40 @@ function roundReviewPanel(review) {
     return row([escape(change.slot), escape(value(change.previous) || '—'), escape(value(change.current) || '—')]);
   });
   return `<article><p><strong>Round ${escape(review.round)} · ${escape(review.choice.replaceAll('_', ' '))}</strong></p>
-    <p>${escape(review.conclusion)}</p>${review.measurement_conflicts ? '<p>Measurement check · ' + escape(Object.values(review.measurement_conflicts).join(' ')) + '</p>' : ''}
+    <p><strong>${memoryLabel(review.conclusion_status)}</strong> · ${escape(review.conclusion)}</p>${review.measurement_conflicts ? '<p>Measurement check · ' + escape(Object.values(review.measurement_conflicts).join(' ')) + '</p>' : ''}
     <p>Next round · ${escape(review.next_intent)}</p>
-    <details><summary>Evidence · ${escape(evidence.ref)}</summary><pre class="memory">${escape(JSON.stringify(evidence.record, null, 2))}</pre></details>
+    <details><summary>Measured record · ${escape(evidence.ref)}</summary><pre class="memory">${escape(JSON.stringify(evidence.record, null, 2))}</pre></details>
     ${changes.length ? table(['Changed entry','Previous','Current'], changes) : '<p>No entries changed.</p>'}</article>`;
 }
 function workingMemoryPanel(farm, version) {
-  const {memory, profile, last_deliberate_bluff: bluff} = farm;
+  const {memory, memory_provenance: provenance, profile, last_deliberate_bluff: bluff} = farm;
   if (typeof memory === 'string') {
     return `<pre class="memory">${escape(memory || 'No private notes yet.')}</pre>`;
   }
   const profileLabels = {short_term: 'Cash decision', reciprocal: 'Partner or verification plan',
     cunning_experimenter: 'Experiment or disclosure plan'};
-  const labels = {goal: ['farm-agent-1.21','farm-agent-1.22','farm-agent-1.23','farm-agent-1.24','farm-agent-1.25'].includes(version) ? profileLabels[profile] : 'Goal',
+  const noteHistory = ['farm-agent-1.22','farm-agent-1.23','farm-agent-1.24','farm-agent-1.25','farm-agent-1.26','farm-agent-1.27'].includes(version);
+  const labels = {goal: version === 'farm-agent-1.21' || noteHistory ? profileLabels[profile] : 'Goal',
     open_question: 'Open question', insight: 'Insight'};
   const notes = Object.entries(labels).filter(([key]) => memory?.[key]);
   let workingNotes = notes.length
-    ? table(['Note', 'Content'], notes.map(([key, label]) => row([label, escape(memory[key])])))
+    ? table(['Note', 'Status', 'Content'], notes.map(([key, label]) => {
+      const origin = provenance?.[key];
+      const kind = memoryLabel(origin?.status || {goal:'plan', open_question:'question'}[key]);
+      const source = origin?.source_status && origin.source_status !== origin.status ? ' · ' + memoryLabel(origin.source_status) : '';
+      return row([label, kind + source + (origin?.sender ? ' · Farm ' + escape(origin.sender) : ''), escape(memory[key])]);
+    }))
     : empty('No private notes yet.');
-  if (['farm-agent-1.24','farm-agent-1.25'].includes(version)) {
+  if (farm.learning || ['farm-agent-1.24','farm-agent-1.25','farm-agent-1.26','farm-agent-1.27'].includes(version)) {
     const book = farm.learning || {};
     if (book.long_term_goal) workingNotes += `<h4>Long-term goal</h4><p>${escape(book.long_term_goal)}</p>`;
     const entries = Object.entries(book.entries || {});
-    if (entries.length) workingNotes += table(['Entry','Private text','Evidence'], entries.map(([slot,v]) =>
-      row([escape(v.title || slot), escape(v.text), `Round ${escape(v.round)} · ${escape(v.evidence.ref)}`])));
+    if (entries.length) workingNotes += table(['Entry','Status','Private text','Measured record'], entries.map(([slot,v]) =>
+      row([escape(v.title || slot), memoryLabel(v.evidence_status), escape(v.text),
+        `Round ${escape(v.evidence.round)} · ${escape(v.evidence.ref)}`])));
     workingNotes += '<h4>Latest private round review</h4>' + (roundReviewPanel(book.last_review) || empty('Available after the NEWS exchange.'));
   }
-  if (['farm-agent-1.22','farm-agent-1.23','farm-agent-1.24','farm-agent-1.25'].includes(version)) workingNotes += '<button id="note-history">View private note history</button>';
+  if (noteHistory) workingNotes += '<button id="note-history">View private note history</button>';
   if (!bluff) return workingNotes;
   return workingNotes + `<h3>Last self-declared bluff</h3><p>Round ${escape(bluff.round)} · phase ${escape(bluff.phase)} · turn ${escape(bluff.turn + 1)}</p>` +
     table(['Public statement', 'Private intended benefit'], [row([escape(bluff.statement), escape(bluff.intended_benefit)])]);
@@ -119,8 +131,8 @@ async function loadNoteHistory(firstPage) {
     const labels = {goal:'Plan', open_question:'Open question', insight:'Insight'};
     const html = page.changes.map(c => {
       if (c.kind === 'round_review') return roundReviewPanel(c);
-      const source = c.evidence ? `<details><summary>Evidence · ${escape(c.evidence.ref)}</summary><pre class="memory">${escape(JSON.stringify(c.evidence.record,null,2))}</pre></details>` : '';
-      return `<article><p><strong>Round ${escape(c.round)} · phase ${escape(c.phase)} · turn ${escape(c.turn+1)} · ${labels[c.field]}</strong></p><p>${escape(c.value || 'Closed / cleared')}</p>${source}</article>`;
+      const source = c.evidence ? `<details><summary>Source · ${memoryLabel(c.evidence.evidence_status)} · ${escape(c.evidence.ref)}</summary><pre class="memory">${escape(JSON.stringify(c.evidence.record,null,2))}</pre></details>` : '';
+      return `<article><p><strong>Round ${escape(c.round)} · phase ${escape(c.phase)} · turn ${escape(c.turn+1)} · ${labels[c.field]}</strong></p><p>${c.value ? memoryLabel(c.provenance?.status) + ' · ' + escape(c.value) : 'Closed / cleared'}</p>${source}</article>`;
     }).join('');
     content.insertAdjacentHTML('beforeend', html || empty('No changes recorded.'));
     more.dataset.before = page.before || '';

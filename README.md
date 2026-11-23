@@ -85,7 +85,7 @@ With quality off, a living ripe plant earns 20. Water returns automatically in e
 Delivery can put a farm into debt. Sales repay debt, then returns are settled. Farms
 with a net balance of zero or less at that point are eliminated, even in rounds without sales.
 The setup preview and Agent laboratory show the same public rules the agents receive.
-New games use rules `farm-1.7` and prompt `farm-agent-1.26`. Model-facing accounts,
+New games use rules `farm-1.7` and prompt `farm-agent-1.27`. Model-facing accounts,
 archived account observations and official NEWS balances use coins. The engine and round-data CSV use cents.
 The Windows pilots use `data/lab-learning-1-25.sqlite3` on port 8772.
 
@@ -214,14 +214,15 @@ until the next conversation phase. Observations show every farm's remaining budg
 
 The phase ends when all remaining eligible farms pass consecutively, everyone has used the
 budget, or two full cycles pass without new content or changed agreement state. Every speaker
-sees the last published turn immediately. Checkpoints preserve the speaker order and counters.
+sees new contributions since its last turn. A pass marks the conversation as seen.
+Checkpoints preserve the speaker order and counters.
 Original messages are retained and ending reasons/budgets are shown in Conversation.
 
 Repetition checks compare all speakers, while protecting fresh concise personal
 consent and actual new signatures. A model draft that echoes the current discussion
 counts as a free pass. If the farm also signs or changes an agreement, the action
-is published with its receipt. An identical generic question from the preceding
-two rounds is also withheld. Questions about a new round or dose can be asked again.
+is published with its receipt. Equivalent questions and repeated invitations to discuss
+the same topic count as passes. Questions about a new round, dose or recipient can be asked again.
 Original drafts remain in the model call log. Identical agreement
 terms reuse the same contract ID; an explicit identical proposal adds the proposer's
 signature to those exact terms if it is new. Repeating one's own signature changes
@@ -349,10 +350,13 @@ contribution, and at most one relevant owner observation. Peer claims retain the
 The compact agreement register puts mentioned IDs and proposals awaiting this farm's signature
 first and preserves every open or active agreement's exact terms.
 
-Phase 1 covers provisional sowing and irrigation of existing groups. Phase 3 shows
-their combined water requirement, the projected return and its fee under full delivery.
-A draft order that would incur a return fee gets one confirmation opportunity.
-Phase 4 compares the actual delivery with the plan and accepts new choices.
+Phase 1 covers provisional sowing and irrigation of existing groups. Phase 3 compares
+whole-liter orders against that combined plan. A farm can submit both revised treatment lists
+with its order. Phase 4 checks the accepted delivery against the proposed combined use.
+Each draft that would incur a return fee gets one reconsideration. The farm sees the
+exact remainder and charge and can try a different treatment, choose an exact fit where
+useful, or keep its draft and accept the charge. Suggested doses show the arithmetic
+and identify any healthy growth seen by this farm at that dose. The farm chooses the treatment.
 Effective voluntary request and net-use caps and their latest evaluated outcome are private decision inputs.
 
 The immediate plan, open question and insight can change during ordinary decisions.
@@ -367,6 +371,11 @@ includes confirmations and decisions to retain a strategy. The model sees the ac
 measurement alongside each selected lesson. An unambiguous contradiction with a current amount
 or plan comparison prompts one correction. If it persists, the journal records the discrepancy
 and the active lesson or named note uses the cited measurement. The farm still chooses its own next action.
+Working notes keep the source, speaker and record location for a cited claim. Labels
+distinguish official records, measured observations, hypotheses, plans and unverified claims.
+A citation or confirmation preserves the status of the farm's interpretation.
+Routine planting, ordering and irrigation context prioritizes records. Unverified
+statements can be requested by explicitly recalling what another farm said or promised.
 The farm sees up to four distinct recent watering outcomes with before and after growth and health.
 Its separate SQLite experience archive records every
 executed group treatment, rounds of account activity and its own agreement evaluations.

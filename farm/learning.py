@@ -2,6 +2,7 @@
 from copy import deepcopy
 from decimal import Decimal
 from fractions import Fraction
+from math import ceil, floor
 import re
 
 from .experience import recent_changes
@@ -48,6 +49,11 @@ def water_quote(config, liters, planned):
             'unused_liters': liters_text(spare), 'shortfall_liters': liters_text(max(0, planned-liters)),
             'delivery_fee_coins': config['delivery_fee_coins'] if liters else 0,
             'return_fee_coins': return_cost(config) if spare else 0}
+
+
+def order_choices(config, total):
+    """Compare no delivery and the two whole-liter neighbors under full delivery."""
+    return [water_quote(config, amount, total) for amount in sorted({0, floor(total), ceil(total)})]
 
 
 def own_caps(s, aid):
@@ -189,14 +195,18 @@ def apply_review(s, aid, review):
     active = book.setdefault('entries', {})
     facts = review_facts(s, aid)
     fact = fact_text(review.source, facts[review.source])
-    evidence = {'ref': review.source, 'round': s['round'], 'record': facts[review.source], 'summary': fact}
+    evidence = {'ref': review.source, 'round': s['round'], 'record': facts[review.source],
+                'summary': fact, 'evidence_status': 'observed'}
     conflicts = review_conflicts(review, facts)
     conclusion = review.conclusion.replace('[[record]]', fact)
     changes = []
 
-    def save(slot, text, title=''):
+    def save(slot, text, title='', *, source=evidence):
         before = active.get(slot)
-        after = {'title': title, 'text': text, 'round': s['round'], 'evidence': evidence} if text else None
+        status = 'question' if slot.startswith('question:') else (
+            'observed' if text == source.get('summary') else 'hypothesis')
+        after = {'title': title, 'text': text, 'round': s['round'], 'evidence': source,
+                 'evidence_status': status} if text else None
         if after:
             active[slot] = after
         else:
@@ -210,9 +220,10 @@ def apply_review(s, aid, review):
         text = conclusion
         if 'conclusion' in conflicts and slot.startswith('lesson:'):
             text = fact
-        if operation == 'confirm':
-            text = active[slot]['text']
-        if operation != 'confirm' or 'conclusion' not in conflicts:
+        if operation == 'confirm' and 'conclusion' not in conflicts:
+            previous = active[slot]
+            save(slot, previous['text'], previous['title'], source=previous['evidence'])
+        elif operation != 'confirm':
             save(slot, None if operation in ('retire', 'close') else text)
     if review.working_note:
         note = review.working_note
@@ -224,6 +235,7 @@ def apply_review(s, aid, review):
             changes.append({'slot': key, 'previous': book.get(key), 'current': value.strip()})
             book[key] = value.strip()
     record = {'agent_id': aid, 'round': s['round'], 'choice': review.choice, 'conclusion': conclusion,
+              'conclusion_status': 'observed' if conclusion == fact else 'hypothesis',
               'next_intent': book['next_intent'], 'evidence': evidence, 'changes': changes, 'money_unit': 'coins'}
     if conflicts:
         record['measurement_conflicts'] = conflicts
@@ -252,4 +264,6 @@ def learning_context(agent, phase, review=False):
     return {'long_term_goal': book.get('long_term_goal'), 'next_intent': book.get('next_intent'),
             'entries': {slot: {'title': row['title'], 'text': row['text'],
                        'source': row['evidence']['ref'], 'round': row['round'],
+                       'evidence_status': row.get('evidence_status', 'hypothesis'),
+                       'source_round': row['evidence'].get('round', row['round']),
                        'measured_record': row['evidence'].get('summary')} for slot, row in selected}}

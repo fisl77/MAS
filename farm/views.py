@@ -8,8 +8,9 @@ from .water_budget import liters_text
 from .conversation import current_progress, phase_budget, public_discussion, speaker_order, turn_messages
 from .evidence import cultivation_evidence
 from .experience import recent_changes
-from .knowledge import INITIAL_POND, agent_knowledge
-from .learning import learning_context, own_caps, plan_amounts, review_facts, water_quote
+from .knowledge import INITIAL_POND, agent_knowledge, return_cost
+from .learning import learning_context, order_choices, own_caps, plan_amounts, review_facts, water_quote
+from .memory import note_provenance
 
 
 def conversation_status(s, aid=None):
@@ -40,6 +41,9 @@ def observation(s, aid, *, store=None, rid=None):
     own = {k: deepcopy(a[k]) for k in ("id", "profile", "bank", "profit", "debt", "plants",
            "request", "delivered", "returned", "used", "sold", "lost", "fees", "revenue")}
     own["memory"] = working_notes(a["memory"])
+    if own['memory']:
+        saved = a.get('memory_provenance', {})
+        own['memory_provenance'] = {field: deepcopy(saved.get(field) or note_provenance(field)) for field in own['memory']}
     review = bool(s.get('review_pending'))
     if a.get('learning'):
         own['learning'] = learning_context(a, s['phase'], review)
@@ -65,6 +69,8 @@ def observation(s, aid, *, store=None, rid=None):
         own['planned_total_liters'] = liters_text(total)
         if s['phase'] == 3:
             own['order_if_following_plan'] = water_quote(s['config'], ceil(total), total)
+            if total.denominator != 1 and return_cost(s['config']):
+                own['whole_order_choices'] = order_choices(s['config'], total)
             if s['history']:
                 old = s['history'][-1]['agents'][aid]['request']
                 if old != ceil(total):
@@ -104,6 +110,8 @@ def observation(s, aid, *, store=None, rid=None):
         public = s["config"]["communication"] and s["phase"] in (2, 7) and not review
         lookup = value
         turn_text = ''
+        if s['phase'] in (1, 3, 4):
+            lookup = {**value, 'messages': [], 'followup_messages': [], 'older_discussion': []}
         if public:
             latest, direct = turn_messages(s, aid)
             lookup = {**value, 'messages': latest, 'followup_messages': direct, 'older_discussion': []}

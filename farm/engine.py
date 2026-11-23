@@ -10,6 +10,7 @@ from .conversation import (classify_public_pass, current_progress, eligible_spea
                            retain_public_history, speaker_order)
 from .evidence import record_trial
 from .learning import check_review, apply_review
+from .memory import note_provenance
 from .knowledge import FULL_HARVEST_COINS, INITIAL_POND, MAX_HEALTH, POND_CAPACITY, return_cost
 from .water_budget import WaterBudgetError, allocation_report
 
@@ -174,8 +175,11 @@ def validate_decision(s, aid, d: Decision):
         raise ValueError("A private bluff reason requires a cunning farm and a public statement.")
     if phase != 3 and d.request is not None:
         raise ValueError("Water requests are only accepted in the request phase.")
-    if phase != 1 and (d.planned_sowing is not None or d.planned_irrigation is not None):
-        raise ValueError("A provisional sowing plan belongs to the planning phase.")
+    revises_plan = d.planned_sowing is not None or d.planned_irrigation is not None
+    if revises_plan and phase not in (1, 3):
+        raise ValueError("A provisional plan belongs to planning or can be revised with the water order.")
+    if phase == 3 and revises_plan and (d.planned_sowing is None or d.planned_irrigation is None):
+        raise ValueError("To revise your plan with the order, provide both planned_sowing and planned_irrigation.")
     if phase == 3 and d.request is None:
         raise ValueError("Provide a whole-liter water request.")
     if phase != 4 and (d.new_plants or d.irrigation):
@@ -183,16 +187,21 @@ def validate_decision(s, aid, d: Decision):
     if phase in (2, 7) and s['config']['communication'] and (d.message.strip() or d.contracts):
         if phase_budget(s)['messages_used'].get(aid, 0) >= PUBLIC_MESSAGE_LIMIT:
             raise ValueError(f"Farm {aid} has used all {PUBLIC_MESSAGE_LIMIT} public contributions in this phase. Pass or wait for the next conversation phase.")
-    if phase in (1, 4):
+    if phase in (1, 4) or phase == 3 and revises_plan:
         available = {g["id"]: g["count"] for g in a["plants"]}
         total = F(0)
-        for x in (d.planned_irrigation or []) if phase == 1 else d.irrigation:
+        irrigation = d.irrigation if phase == 4 else d.planned_irrigation or []
+        for x in irrigation:
             if x.group_id not in available or x.count > available[x.group_id]:
                 raise PlantAvailabilityError(f"Farm {aid} requested {x.count} plants in {x.group_id}; "
                                              f"{available.get(x.group_id, 0)} still available for irrigation.")
             available[x.group_id] -= x.count
             total += x.count * water(x.water_per_plant)
-        total += sum((x.count * water(x.water_per_plant) for x in d.new_plants), F(0))
+        sowing = d.new_plants if phase == 4 else d.planned_sowing or []
+        total += sum((x.count * water(x.water_per_plant) for x in sowing), F(0))
+        if phase == 3 and total > d.request:
+            raise ValueError(f"The revised plan uses {allocation_report(d.request, sowing, irrigation)['total_liters']} L "
+                             f"but the order is {d.request} L. Make the new plan fit your order.")
         if phase == 4 and total > a["delivered"]:
             raise WaterBudgetError(allocation_report(a['delivered'], d.new_plants, d.irrigation))
     if d.contracts:
@@ -213,18 +222,23 @@ def apply_memory(s, aid, d):
         agent['planned_irrigation'] = [entry.model_dump() for entry in d.planned_irrigation]
     if isinstance(d.memory, str):
         agent["memory"] = d.memory  # Replay historical accepted decisions verbatim.
+        agent.pop('memory_provenance', None)
     elif d.memory is not None:
         notes = working_notes(agent["memory"])
+        provenance = agent.setdefault('memory_provenance', {})
         for field, raw in d.memory.model_dump(exclude_none=True, exclude={'based_on'}).items():
             value = raw.strip()
             if notes.get(field, '') == value:
                 continue
+            origin = note_provenance(field, d.note_evidence) if value else None
             emit(s, 'note_changed', agent_id=aid, turn=s['turn'], field=field,
-                 previous=notes.get(field), value=value or None, evidence=d.note_evidence)
+                 previous=notes.get(field), value=value or None, evidence=d.note_evidence, provenance=origin)
             if value:
                 notes[field] = value
+                provenance[field] = origin
             else:
                 notes.pop(field, None)
+                provenance.pop(field, None)
         agent["memory"] = notes
     agent["recall_query"] = d.recall_query
 
@@ -349,6 +363,7 @@ def public_turn(s, decisions):
     budget = deepcopy(phase_budget(s))
     budget.setdefault('opener', aid)
     budget['last_speaker'] = aid
+    budget.setdefault('last_turn_by_agent', {})[aid] = s['turn']
     before = deepcopy(s['contracts']) if decision.contracts else None
     receipts = []
     for action in decision.contracts:

@@ -202,6 +202,23 @@ def _units(text):
     return [x for x in units if x.rstrip('.!') not in ("thanks", "thank you", "agreed", "understood", "ok", "okay")]
 
 
+_QUESTION_WORDS = frozenset("""i i'd i'm we our my you your their the a an it this that
+to of at about for in with from can could would please anyone someone tell share
+like want know explain elaborate clarify describe more any some information details
+recent latest specific given such regarding pertaining""".split())
+_QUESTION_ALIASES = {
+    'experiments': 'trial', 'experiment': 'trial', 'trials': 'trial',
+    'findings': 'result', 'insights': 'result', 'results': 'result', 'outcomes': 'result',
+    'proposals': 'proposal', 'offers': 'proposal', 'offer': 'proposal',
+    'learned': 'learn', 'learnt': 'learn',
+}
+
+
+def _question_terms(sentence):
+    words = re.findall(r"\d+(?:[.,]\d+)?|[a-z]+(?:'[a-z]+)*|[<>≤≥=]", sentence)
+    return {_QUESTION_ALIASES.get(word, word) for word in words if word not in _QUESTION_WORDS}
+
+
 def _same_unit(current, previous):
     # A renamed agreement alone contributes no new claim. Actual signed actions are checked separately.
     current = re.sub(r'\bc\d+\b', 'contract', current, flags=re.I)
@@ -215,9 +232,12 @@ def _same_unit(current, previous):
     if a == b:
         return True
     if '?' in current:
-        # Only strip conversational padding. Retain the action, addressee, quantities and polarity.
-        padding = r"\b(?:please|perhaps|exactly|could you (?:please )?tell (?:me|us)|can you tell (?:me|us))\b"
-        return words(re.sub(padding, '', current)) == words(re.sub(padding, '', previous))
+        # A changed amount, recipient, topic or polarity is a different question.
+        anchors = r'\bfarm\s+[a-e]\b|\d+(?:[.,]\d+)?'
+        if re.findall(anchors, current) != re.findall(anchors, previous):
+            return False
+        terms = _question_terms(current)
+        return bool(terms) and terms == _question_terms(previous)
     if re.findall(r"\d+(?:\.\d+)?", current) != re.findall(r"\d+(?:\.\d+)?", previous):
         return False
     if set(a) & _MEANING_WORDS != set(b) & _MEANING_WORDS:
@@ -275,6 +295,22 @@ def _generic_question(text):
     return tuple(parts)
 
 
+def _question_without_new_point(text):
+    """Find the asked question when the rest is only a recap or announcement of intent to speak."""
+    units = _units(text)
+    if len(units) < 2 or '?' not in units[-1]:
+        return None
+    lead = " ".join(units[:-1])
+    framing = (r"^(?:i(?:'d| would) like to (?:ask|discuss|know)\b|"
+               r"i(?:'m| am) (?:interested in|considering)\b|"
+               r"i(?:'ve| have) reviewed (?:the latest question|the previous message)\b)")
+    if all(re.match(framing, sentence) for sentence in units[:-1]) and not re.search(
+            r"\d|\b(?:died|grew|sold|measured|paid|received|signed|will (?:order|request)|"
+            r"my (?:result|balance|dose))\b", lead):
+        return units[-1]
+    return None
+
+
 def _indirect_question(text):
     request = re.match(r"\s*i(?:'d| would) like to know (?:more about|if anyone has (?:any )?information (?:about|on)) "
                        r"(.+)", text.casefold().replace('’', "'"), re.S)
@@ -284,6 +320,18 @@ def _indirect_question(text):
     subject = re.sub(r'(?:[.!?]\s*it|\s+and how it) (?:might|may|could) (?:affect|impact|influence)\b',
                      ' may affect', subject)
     return tuple(re.findall(r"[\w']+|[<>≤≥=]", subject))
+
+
+def _invitation_topics(text):
+    # Announcing the same discussion again adds no observation or action.
+    units = _units(text)
+    if len(units) != 1 or '?' in text or re.search(r"\d|\b(?:because|tried|measured|observed|"
+                                                  r"will|propose|offer|accept|reject)\b", text, re.I):
+        return set()
+    if not re.match(r"i(?:'d| would) like to (?:review|discuss|revisit|talk about)\b|"
+                    r"(?:let's|we should) (?:review|discuss|talk about)\b", units[0]):
+        return set()
+    return {name for name, pattern in _DISCUSSION_TOPICS.items() if pattern.search(text)}
 
 
 def repeats_public_text(s, aid, text, own_reports=()):
@@ -297,9 +345,22 @@ def repeats_public_text(s, aid, text, own_reports=()):
         history = [m for m in history if m['sender'] == aid]
     if classify_public_pass(history, [{'sender': aid, 'text': text}])['repeated_agents']:
         return True
+    topics = _invitation_topics(text)
+    if topics and any(topics == _invitation_topics(m['text']) for m in history):
+        return True
     indirect = _indirect_question(text)
     if indirect and any(indirect == _indirect_question(m['text']) for m in history):
         return True
+    question_only = _question_without_new_point(text)
+    if question_only:
+        recipients = set(re.findall(r'\bfarm\s+[a-e]\b', text.casefold()))
+        for message in history:
+            old = message['text']
+            if recipients != set(re.findall(r'\bfarm\s+[a-e]\b', old.casefold())):
+                continue
+            old_question = _question_without_new_point(old) or (_units(old) or [''])[-1]
+            if '?' in old_question and _same_unit(question_only, old_question):
+                return True
     question = _generic_question(text)
     return bool(question) and any(question == _generic_question(m['text']) for m in reversed(s['messages'])
                                   if m['round'] >= s['round'] - 2)
@@ -490,8 +551,10 @@ def public_discussion(s, aid):
 
 
 def turn_messages(s, aid):
-    """Latest public contribution and most recent direct question since the farm last spoke."""
-    history = [m for m in s['messages'] if (m['round'], m['phase']) == (s['round'], s['phase'])]
+    """Public contributions received since the farm's last turn, including a pass."""
+    last_turn = phase_budget(s).get('last_turn_by_agent', {}).get(aid, -1)
+    history = [m for m in s['messages'] if (m['round'], m['phase']) == (s['round'], s['phase'])
+               and m['turn'] > last_turn]
     latest = history[-1:]  # Empty at the start of each new discussion.
     address = re.compile(rf'\bfarm\s+{aid}\b|\b{aid}\s*[:,]', re.I)
     question = None
@@ -519,7 +582,9 @@ def experience_topic(text):
 def exchange_references(s, aid):
     history = [m for m in s['messages'] if (m['round'], m['phase']) == (s['round'], s['phase'])]
     last_own = next((m for m in reversed(history) if m['sender'] == aid and m['text'].strip()), None)
-    position = next((i for i in range(len(history)-1, -1, -1) if '?' in history[i]['text']), None)
+    last_turn = phase_budget(s).get('last_turn_by_agent', {}).get(aid, -1)
+    position = next((i for i in range(len(history)-1, -1, -1)
+                     if '?' in history[i]['text'] and history[i]['turn'] > last_turn), None)
     refs = {}
     if last_own:
         refs['your_last_statement'] = _public_message(last_own, aid)

@@ -5,13 +5,13 @@ from .conversation import pass_key
 from .schema import NOTE_LENGTH
 
 
-SYSTEM = f"""Run your farm for profit and survival. Follow observation.game_rules. All monetary figures are in coins.
-Farms cannot transfer water, share fees, waive charges by agreement or act for others. Breaches are recorded without fines.
-The end round and live pond level are hidden. Official NEWS is public. Attribute all peer claims, including recalled
-quotations. Trust your own measured evidence. A dose that only caused death is reason to try a different treatment.
+SYSTEM = f"""Run your farm for profit and survival. Money is in coins. Use game_rules, NEWS and the register as official facts.
+Farms cannot transfer water, share fees or act for others. Breaches have no fine. The end round and live pond level are hidden.
+Use measured records for quantities. A saved claim stays unverified. An inference stays a hypothesis even with a citation.
+Check peer advice with a small own trial before relying on it for production.
 Keep your plan, open_question and insight private ({NOTE_LENGTH} characters each). Update changed notes.
 Clear an answered open_question with an empty string. Optional memory.based_on citations: recall:1, plant:1,
-message:1, direct:1, result:1 (one-based), visible contract ID, accounts or news. Use [[trial]] for measured
+message:1, direct:1, result:1 (one-based), visible contract ID, accounts, rules or news. Use [[trial]] for measured
 plant results. Mark hypotheses and future tests as such. Plant growth/health pairs give your [before,after].
 For the next decision, recall_query accepts a measured dose, real group or agreement ID, outcome, or round
 and topic. Search past private revisions with "archive" plus a word, slot or round. Omit for phase-relevant recall. Tables use columns and rows.
@@ -23,11 +23,12 @@ The order in EVERY round is planning, discussion, water order, farm work, growth
 returns/weather, NEWS. Sowing starts in round 1, phase 4. Compare tested doses by numeric growth,
 health, losses and costs. Revise failed treatments and keep open questions private.
 Record BOTH planned_sowing and planned_irrigation by real group ID, count and dose. Unlisted plants get zero. These are provisional choices.
-Choose what to test from your own evidence. Budget future deliveries and fees through automatic harvest."""
+Compare your total dose with possible whole-liter orders. Use your own evidence and budget until harvest."""
 
 TRIAL_GUIDE = """For an unknown dose, start with 1–5 comparable plants per dose. Identical seedlings given
 the same dose have identical outcomes. Compare several distinct doses roughly 1 L apart if affordable.
-If all tested doses failed, explore beyond that range. When nearby doses give contrasting results,
+A dose that only caused death is a reason to try a different treatment. If all tested doses failed,
+explore outside that range. When nearby doses give contrasting results,
 try finer steps (e.g. 0.1 L) between them in later rounds. These are step sizes, not target doses.
 Scale up production when your farm has seen healthy growth at that dose in multiple rounds for that
 plant stage and can sustain the crop with future water and fees."""
@@ -35,8 +36,8 @@ plant stage and can sustain the crop with future water and fees."""
 REQUEST_GUIDE = """Order a nonnegative whole number of liters now for ALL existing plants and intended sowing.
 Use the actual delivery in phase 4. A farm with no current plants can still order for new ones.
 There is one delivery today. You cannot order extra in phase 4 or save water for next round.
-Calculate today's order from existing irrigation plus the sum of count × dose for planned sowing.
-For exploration budget only 1–5 plants per test dose. Round the total up to whole liters as needed."""
+Sum both treatment lists. For a fractional total, a smaller order needs a reduced plan and a larger order can leave
+a costly remainder. Compare both alternatives or defer, then align the order and treatment plan."""
 
 CARE_GUIDE = """Plants are free. Inspect your own inventory by group_id, growth and health.
 There is no manual harvest or separate inspection action. Sow with new_plants; each entry waters EVERY
@@ -45,8 +46,8 @@ Use decimal strings with up to three places. Split a group across different dose
 Unlisted plants get zero; last round's dose does not repeat.
 Combine identical doses within a sowing batch or within the same existing group. Keep different doses separate.
 Both too much and too little water can harm plants. Compare before/after growth and health. A living plant
-labelled 'growing' may have gained nothing. Sowing is optional. If the delivery differs from the plan,
-adjust the trial to fit. Extra water alone is no reason to enlarge a test batch."""
+labelled 'growing' may have gained nothing. Sowing is optional. Match the actual delivery when a useful plan fits.
+Keep a valid treatment and pay a return fee if changing it would risk more than the charge."""
 
 REFLECTION_GUIDE = """Review your own results, fees and published NEWS. Compare measured growth and health
 with the plan; revise a failed treatment or open question. Keep peer claims separate from private evidence."""
@@ -54,15 +55,13 @@ with the plan; revise a failed treatment or open question. Keep peer claims sepa
 PRIVATE_DISCUSSION = """Reflect privately or pass. There are up to ten private steps; two consecutive silent steps end
 the phase. No public messages or agreement actions are available."""
 
-CONVERSATION_GUIDE = """PUBLIC CONVERSATION SKILLS
-Choose what benefits your farm: learn, test a claim, influence others, discuss costs, care, trust or negotiate.
-Answer a peer's question with a specific observation, decision or uncertainty. Use [[trial]] to share an
-executed treatment. Name a future test as a plan. Check a question's premise against game_rules and NEWS.
+CONVERSATION_GUIDE = """PUBLIC CONVERSATION
+Choose a new point that benefits your farm. Answer an open question with a concrete detail, challenge a
+claim or make an offer. Check premises against game_rules and NEWS. Use [[trial]] for an observed treatment.
 You need not share knowledge or cooperate. Deception follows your profile. Keep true private observations distinct.
 Use contracts=[] for ordinary speech. Offer an agreement only if its terms advance your goal.
-Write 1–3 short sentences, at most 600 characters. Keep memory and profile private. Avoid repeated questions,
-copied positions and recaps. Check exchange for the latest question, your last position and a possible published reply.
-Pass when the exchange has no new point. Repeating another farm's question counts as silence.
+Use 1–2 short sentences, at most 600 characters. Skip recaps and generic invitations to discuss.
+If nobody added a new point since your turn, pass unless you have a specific new point or action.
 Speaking turns are sequential. Passing is free and reversible. All eligible speakers passing consecutively,
 two full cycles without progress or exhausted budgets end the phase. A followup question may already be answered."""
 

@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
 RULE_VERSION = "farm-1.7"
-PROMPT_VERSION = "farm-agent-1.26"
+PROMPT_VERSION = "farm-agent-1.27"
 NOTE_LENGTH = 240
 PUBLIC_MESSAGE_LIMIT = 10
 QUIET_PASS_LIMIT = 2
@@ -187,6 +187,8 @@ class PlantingPlan(PrivateNotes):
 
 class WaterRequest(PrivateNotes):
     request: int = Field(ge=0, strict=True)
+    planned_sowing: list[NewPlants] | None = None
+    planned_irrigation: list[Irrigation] | None = None
 
 
 class FarmWork(PrivateNotes):

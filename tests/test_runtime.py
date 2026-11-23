@@ -187,7 +187,7 @@ def test_phase_specific_schemas_do_not_offer_forbidden_actions():
     for phase, communication, allowed in (
         (1, True, {'memory','recall_query','planned_sowing','planned_irrigation'}),
         (2, False, {'memory','recall_query','pass_turn'}),
-        (3, True, {'memory','recall_query','request'}),
+        (3, True, {'memory','recall_query','request','planned_sowing','planned_irrigation'}),
         (4, True, {'memory','recall_query','new_plants','irrigation'}),
         (7, True, {'memory','recall_query','pass_turn','message','contracts'})):
         assert set(response_model(phase,communication).model_json_schema()['properties'])==allowed

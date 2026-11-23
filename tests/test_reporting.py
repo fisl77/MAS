@@ -100,6 +100,75 @@ def test_marked_bluff_survives_checkpoint_without_becoming_a_fact(tmp_path):
     assert reason not in dumps(s['messages'])
 
 
+def test_saved_bluff_citation_stays_unverified_and_recall_requires_a_claim_query(tmp_path):
+    s = game(first=2)
+    store = Store(tmp_path/'claims.db')
+    rid = store.create(s)
+    claim = 'Watering with 1.1 L per plant reliably gives healthy growth.'
+    advance(s, {'C': Decision(pass_turn=False, message=claim, private_bluff_reason='Sell a rival on a weak dose.')})
+    store.save(rid, s)
+    choice = decide(s, 'A', store, rid, [{'pass_turn': True, 'memory': {
+        'insight': 'Verify the reported dose in a small comparison.', 'based_on': 'message:1'}}])
+    advance(s, {'A': choice})
+    store.save(rid, s)
+    s = store.load(rid)
+    s.update(round=2, phase=3, turn=0)
+    a = s['agents']['A']
+    a['recall_query'] = 'Farm C water'
+    ordinary = observation(s, 'A', store=store, rid=rid)
+    assert ordinary['own_farm']['memory_provenance']['insight'] == {
+        'status': 'unverified_claim', 'source': 'message:1', 'source_status': 'unverified_claim',
+        'sender': 'C', 'round': 1, 'phase': 2, 'turn': 0}
+    assert not any(row['kind'] == 'claim' for row in ordinary['recalled_experiences'])
+    a['recall_query'] = 'What did Farm C say about water?'
+    [quote] = observation(s, 'A', store=store, rid=rid)['recalled_experiences']
+    assert quote['text'] == claim and quote['source_type'] == 'unverified_peer_claim'
+    assert 'insight' not in observation(s, 'B')['own_farm'].get('memory_provenance', {})
+
+
+def test_order_revision_and_actual_farm_work_can_avoid_a_fractional_return(tmp_path):
+    s = game(phase=3)
+    store = Store(tmp_path/'fit.db')
+    rid = store.create(s)
+    sowing = [{'count': 1, 'water_per_plant': '3.4'}, {'count': 2, 'water_per_plant': '2'}]
+    a = s['agents']['A']
+    a.update(planned_sowing=sowing, planned_irrigation=[])
+    own = observation(s, 'A')['own_farm']
+    assert [(q['delivery_liters'], q['shortfall_liters'], q['unused_liters'], q['return_fee_coins'])
+            for q in own['whole_order_choices']] == [(0, '7.4', '0', 0), (7, '0.4', '0', 0), (8, '0', '0.6', 40)]
+    revision = [{'count': 1, 'water_per_plant': '3'}, {'count': 2, 'water_per_plant': '2'}]
+    order = decide(s, 'A', store, rid, [{'request': 8}, {'request': 7, 'planned_sowing': revision, 'planned_irrigation': []}])
+    advance(s, {'A': order, 'B': Decision(request=0), 'C': Decision(request=0)})
+    assert a['planned_sowing'] == revision and a['delivered'] == 7
+    work = decide(s, 'A', store, rid, [
+        {'new_plants': [{'count': 1, 'water_per_plant': '2.9'}, revision[1]]},
+        {'new_plants': revision},
+    ])
+    fees = [c['water_return_quote'] for c in store.calls(rid) if c['water_return_quote']]
+    assert [q['unused_liters'] for q in fees] == ['0.6', '0.1']
+    advance(s, {'A': work})
+    advance(s)
+    advance(s)
+    assert s['history'][-1]['agents']['A']['return_fee'] == 0
+    assert s['history'][-1]['agents']['A']['used'] == 7
+
+
+@pytest.mark.parametrize('enabled,attempts', [(True, 2), (False, 1)])
+def test_farm_can_keep_a_measured_dose_and_choose_to_pay_for_the_rest(tmp_path, enabled, attempts):
+    s = game(phase=4)
+    s['config']['return_fee_enabled'] = enabled
+    s['agents']['A']['delivered'] = 3
+    store = Store(tmp_path/'return.db')
+    rid = store.create(s)
+    work = {'new_plants': [{'count': 1, 'water_per_plant': '2.9'}]}
+    choice = decide(s, 'A', store, rid, [work] * attempts)
+    calls = store.calls(rid)
+    assert len(calls) == attempts and choice.new_plants[0].water_per_plant == '2.9'
+    if enabled:
+        assert '0.1 L' in calls[1]['request']['messages'][-1]['content']
+        assert '40 coins' in calls[1]['request']['messages'][-1]['content']
+
+
 def test_unmarked_claim_cannot_be_relabelled_as_bluff_after_review(tmp_path):
     s = game(first=2)
     store = Store(tmp_path/'game.db')

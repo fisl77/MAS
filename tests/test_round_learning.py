@@ -149,6 +149,18 @@ def test_cited_record_survives_a_contradictory_interpretation_without_changing_i
     assert claim not in memory['entries']['lesson:1']['text']
 
 
+def test_confirming_a_hypothesis_does_not_turn_it_into_a_measured_record():
+    s = new_game(Config())
+    a = s['agents']['A']
+    apply_review(s, 'A', review('water', 'add_lesson', 'A different planting mix might save coins.'))
+    apply_review(s, 'A', review('accounts', 'confirm_lesson:1', 'I still want to test the mix.'))
+    apply_review(s, 'A', review('accounts', 'add_lesson', '[[record]]'))
+    lessons = learning_context(a, 7, review=True)['entries']
+    assert lessons['lesson:1']['evidence_status'] == 'hypothesis'
+    assert lessons['lesson:1']['source'] == 'water'
+    assert lessons['lesson:2']['evidence_status'] == 'observed'
+
+
 def test_review_clarification_shows_the_real_amount_and_accepts_the_farms_new_strategy(tmp_path, monkeypatch):
     s = new_game(Config())
     s.update(phase=7, news_ready=True, review_pending=True)

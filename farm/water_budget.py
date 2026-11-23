@@ -94,6 +94,31 @@ def allocation_report(delivered, new_plants, irrigation):
             'excess_liters': liters_text(max(Fraction(0), used-available)), 'entries': entries}
 
 
+def exact_fit_edits(report, target, trials):
+    """Calculate optional sub-liter changes using this farm's own tested doses when possible."""
+    delta = Fraction(target) - water(report['total_liters'])
+    if not 0 < abs(delta) < 1:
+        return []
+    healthy_doses = {'existing_plants': set(), 'new_plants': set()}
+    for trial in trials:
+        if trial['healthy_productive_plants']:
+            healthy_doses[trial['kind']].add(trial['water_per_plant'])
+    edits = []
+    for row in report['entries']:
+        old_dose = water(row['water_per_plant_liters'])
+        stage = 'existing_plants' if 'group_id' in row else 'new_plants'
+        known = healthy_doses[stage]
+        for dose in sorted(known | {old_dose + delta, old_dose + delta / row['count']}):
+            if dose < 0 or dose == old_dose or (dose * 1000).denominator != 1:
+                continue
+            count = delta / (dose - old_dose)
+            if count.denominator == 1 and 0 < count <= row['count']:
+                edits.append({'row': row['path'], 'change_count': int(count),
+                              'old_L_each': liters_text(old_dose), 'new_L_each': liters_text(dose),
+                              'own_healthy_growth_seen_at_new_dose': dose in known})
+    return sorted(edits, key=lambda x: not x['own_healthy_growth_seen_at_new_dose'])[:3]
+
+
 class WaterBudgetError(ValueError):
     def __init__(self, report):
         self.report = report

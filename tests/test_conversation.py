@@ -6,7 +6,7 @@ from farm.schema import Config, Decision
 from farm.store import dumps, loads
 from farm.views import observation
 from farm.conversation import (fee_claim_needs_review, payment_conflict, repeats_public_text, repeats_without_progress,
-                               unsupported_agreement_terms)
+                               turn_messages, unsupported_agreement_terms)
 from farm.agents import model_decision, model_format, scripted
 from farm.store import Store
 import asyncio
@@ -67,6 +67,34 @@ def test_same_indirect_request_preserves_new_rounds_and_subjects():
     ask = "I'd like to know more about the weather forecast for round 4 and how it might impact our water usage and delivery fees."
     assert repeats_public_text(s, 'A', ask)
     assert not repeats_public_text(s, 'A', ask.replace('round 4', 'round 5'))
+
+
+def test_new_framing_with_the_same_question_is_an_echo_but_a_new_observation_is_not():
+    s = discussion()
+    advance(s, {'A': Decision(pass_turn=False, message=
+        "I'd like to ask Farm B about their trial. Could you share your trial results?")})
+    repeated = "I'm interested in Farm B's experiment. Can you describe your experiment findings?"
+    assert repeats_public_text(s, 'B', repeated)
+    fresh = "At 2 L my plants grew 10 points. Can you describe your experiment findings?"
+    assert not repeats_public_text(s, 'B', fresh)
+    assert not repeats_public_text(s, 'B', repeated.replace('Farm B', 'Farm A'))
+
+
+def test_an_unanswered_question_is_delivered_once_until_someone_adds_a_message():
+    s = discussion()
+    advance(s, {'A': Decision(pass_turn=False, message='Farm B, what did you observe?')})
+    assert turn_messages(s, 'B')[0]
+    advance(s, {'B': Decision()})
+    assert turn_messages(s, 'B') == ([], [])
+    advance(s, {'A': Decision(pass_turn=False, message='Farm B, did your seedlings survive?')})
+    assert 'seedlings' in turn_messages(s, 'B')[0][0]['text']
+
+
+def test_same_invitation_to_discuss_water_is_an_echo_but_a_concrete_comparison_is_new():
+    s = discussion()
+    advance(s, {'A': Decision(pass_turn=False, message="I'd like to review our water usage.")})
+    assert repeats_public_text(s, 'B', "Let's talk about how to manage the pond.")
+    assert not repeats_public_text(s, 'B', "I'd like to discuss comparing 1.7 L with 2.4 L.")
 
 
 def discussion(phase=2):

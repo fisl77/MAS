@@ -189,8 +189,10 @@ class Store:
                     continue
                 if not all(word in raw.casefold() for word in words):
                     continue
-                found.append({k: item[k] for k in ('round','choice','conclusion','evidence','changes','money_unit',
-                                                   'measurement_conflicts') if k in item})
+                result = {k: item[k] for k in ('round','choice','conclusion','evidence','changes','money_unit',
+                                              'measurement_conflicts') if k in item}
+                result['conclusion_status'] = item.get('conclusion_status', 'hypothesis')
+                found.append(result)
                 if len(found) == 2:
                     break
             return found

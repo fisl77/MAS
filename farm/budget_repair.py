@@ -1,6 +1,7 @@
 """Unexecuted farm drafts whose next model choice is bounded by remaining water."""
 from fractions import Fraction
 
+from .knowledge import return_cost
 from .schema import Decision, water
 from .water_budget import dose_pattern, liters_text
 
@@ -26,6 +27,7 @@ class FarmBudgetDraft:
     def __init__(self, state, aid, proposed):
         self.available = Fraction(state['agents'][aid]['delivered'])
         self.remaining = self.available
+        self.return_fee = return_cost(state['config'])
         self.query = state['agents'][aid]['recall_query']
         self.group_counts = {g['id']: g['count'] for g in state['agents'][aid]['plants']}
         self.pending = {}
@@ -120,10 +122,13 @@ class FarmBudgetDraft:
         rows = [{**row, 'subtotal_liters': liters_text(row['count'] * water(row['water_per_plant'])),
                  'max_selectable_count': self.max_count(row),
                  'keep_affordable': key in self.keepable()} for key, row in self.pending.items()]
+        exact = self.remaining / selected_count if selected_count else None
         return {'available_liters': liters_text(self.available), 'remaining_liters': liters_text(self.remaining),
                 'used_liters': liters_text(self.available-self.remaining), 'proposed_allocations': _records(rows),
                 'selected_allocations': _records(self.selected), 'current_allocation_id': selected_key,
-                'current_count': selected_count,
+                'current_count': selected_count, 'return_fee_if_finished_now_coins': self.return_fee if self.remaining else 0,
+                'dose_using_exact_remainder_L_each': liters_text(exact) if exact is not None and
+                (exact * 1000).denominator == 1 else None,
                 'notice': 'Private unexecuted draft. Unselected new plants are not sown; unselected existing plants receive zero. '
                           'Finish returns unused water under normal rules. No physical actions occur until the full plan is accepted.'}
 

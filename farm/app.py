@@ -150,7 +150,7 @@ def create_app(database=None):
         version = s.get("prompt_version")
         saved = store.last_observation(rid, aid) if version != PROMPT_VERSION else None
         allowed = display(saved if saved is not None else observation(s, aid, store=store, rid=rid))
-        return model_money(allowed) if version in ('farm-agent-1.25', PROMPT_VERSION) else allowed
+        return model_money(allowed) if version in ('farm-agent-1.25', 'farm-agent-1.26', PROMPT_VERSION) else allowed
 
     @app.get("/api/runs/{rid}/agents/{aid}/notes")
     def private_note_history(rid: str, aid: str, before: int | None = None):
